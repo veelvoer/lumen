@@ -1,6 +1,7 @@
-//! Everything the user can change, saved as one JSON file.
+//! Everything the user can change, and the home screen layout, saved as one JSON file.
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
@@ -12,11 +13,18 @@ pub enum Preset {
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Clock {
-    Off,
-    Digital,
-    DotMatrix,
-    Glance,
+pub enum Mode {
+    Auto,
+    Dark,
+    Light,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Shape {
+    Circle,
+    Squircle,
+    Rounded,
+    Square,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
@@ -40,9 +48,147 @@ pub enum DockStyle {
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Mode {
-    Dark,
-    Light,
+pub enum Badges {
+    Off,
+    Dot,
+    Count,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FontChoice {
+    Preset,
+    System,
+    GoogleSans,
+    Inter,
+    Mono,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Action {
+    None,
+    Drawer,
+    Search,
+    Notifications,
+    QuickSettings,
+    LockScreen,
+    Settings,
+    Edit,
+}
+
+impl Action {
+    pub const ALL: [(Action, &'static str); 8] = [
+        (Action::None, "Nothing"),
+        (Action::Drawer, "App drawer"),
+        (Action::Search, "Search"),
+        (Action::Notifications, "Notifications"),
+        (Action::QuickSettings, "Quick settings"),
+        (Action::LockScreen, "Lock screen"),
+        (Action::Settings, "Lumen settings"),
+        (Action::Edit, "Edit home screen"),
+    ];
+}
+
+/// Things that live on the home screen besides apps.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
+pub enum WidgetKind {
+    /// Pixel "At a glance": the date, big
+    Glance,
+    /// Stacked hours over minutes
+    ClockStack,
+    ClockDigital,
+    ClockAnalog,
+    /// Nothing: dot-matrix clock card
+    DotClock,
+    DotDate,
+    DotBattery,
+    /// iOS: weekday and day number
+    Calendar,
+    Battery,
+    SearchBar,
+}
+
+impl WidgetKind {
+    pub const ALL: [WidgetKind; 10] = [
+        WidgetKind::Glance,
+        WidgetKind::ClockStack,
+        WidgetKind::ClockDigital,
+        WidgetKind::ClockAnalog,
+        WidgetKind::DotClock,
+        WidgetKind::DotDate,
+        WidgetKind::DotBattery,
+        WidgetKind::Calendar,
+        WidgetKind::Battery,
+        WidgetKind::SearchBar,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            WidgetKind::Glance => "At a glance",
+            WidgetKind::ClockStack => "Clock (stacked)",
+            WidgetKind::ClockDigital => "Clock (digital)",
+            WidgetKind::ClockAnalog => "Clock (analog)",
+            WidgetKind::DotClock => "Dot-matrix clock",
+            WidgetKind::DotDate => "Dot-matrix date",
+            WidgetKind::DotBattery => "Dot-matrix battery",
+            WidgetKind::Calendar => "Calendar",
+            WidgetKind::Battery => "Battery",
+            WidgetKind::SearchBar => "Search bar",
+        }
+    }
+
+    /// Width and height in grid cells.
+    pub fn span(self, cols: usize) -> (usize, usize) {
+        let w = |n: usize| n.min(cols);
+        match self {
+            WidgetKind::Glance => (w(cols), 1),
+            WidgetKind::ClockStack => (2, 2),
+            WidgetKind::ClockDigital => (w(4), 2),
+            WidgetKind::ClockAnalog => (2, 2),
+            WidgetKind::DotClock => (w(4), 2),
+            WidgetKind::DotDate => (2, 2),
+            WidgetKind::DotBattery => (2, 2),
+            WidgetKind::Calendar => (2, 2),
+            WidgetKind::Battery => (2, 2),
+            WidgetKind::SearchBar => (w(4), 1),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+pub enum Item {
+    App(String),
+    Folder { id: u32, name: String, apps: Vec<String> },
+    Widget { id: u32, kind: WidgetKind },
+}
+
+impl Item {
+    /// Stable identity, also used to animate an item from where it was to where it is now.
+    pub fn key(&self) -> String {
+        match self {
+            Item::App(p) => format!("app:{p}"),
+            Item::Folder { id, .. } => format!("folder:{id}"),
+            Item::Widget { id, .. } => format!("widget:{id}"),
+        }
+    }
+
+    pub fn span(&self, cols: usize) -> (usize, usize) {
+        match self {
+            Item::Widget { kind, .. } => kind.span(cols),
+            _ => (1, 1),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+pub struct Placed {
+    pub item: Item,
+    pub col: usize,
+    pub row: usize,
+}
+
+#[derive(Serialize, Deserialize, Clone, Default, Debug)]
+pub struct Page {
+    pub items: Vec<Placed>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -51,56 +197,88 @@ pub struct Config {
     pub preset: Preset,
     pub mode: Mode,
     pub accent: [u8; 3],
-    /// 0 = square, 1 = circle
+    /// Use the phone's Material You colors as the accent (Android 12+).
+    pub dynamic: bool,
+    pub shape: Shape,
+    /// Corner roundness for `Shape::Rounded`, 0 = square, 1 = circle
     pub icon_radius: f32,
     /// dp
     pub icon_size: f32,
     pub cols: usize,
     pub rows: usize,
+    pub dock_slots: usize,
     pub labels: bool,
-    pub mono_icons: bool,
-    pub clock: Clock,
+    pub themed_icons: bool,
+    pub font: FontChoice,
+    pub font_scale: f32,
     pub search: Search,
     pub drawer: DrawerStyle,
+    pub drawer_cols: usize,
+    pub suggestions: bool,
+    pub app_library: bool,
     pub dock: DockStyle,
     pub dock_radius: f32,
-    pub font_scale: f32,
     pub wallpaper_dim: f32,
+    pub wallpaper_scroll: bool,
     pub page_dots: bool,
-    pub dock_apps: Vec<String>,
-    pub pages: Vec<Vec<String>>,
-    pub hidden: Vec<String>,
+    pub badges: Badges,
+    pub swipe_up: Action,
+    pub swipe_down: Action,
+    pub double_tap: Action,
+    pub lock_layout: bool,
     pub auto_update: bool,
     pub last_check: u64,
     pub seeded: bool,
+
+    pub pages: Vec<Page>,
+    pub dock_items: Vec<Item>,
+    pub hidden: Vec<String>,
+    pub names: HashMap<String, String>,
+    pub launches: HashMap<String, u32>,
+    pub next_id: u32,
 }
 
 impl Default for Config {
     fn default() -> Self {
         let mut c = Config {
             preset: Preset::Pixel,
-            mode: Mode::Dark,
+            mode: Mode::Auto,
             accent: [138, 180, 248],
+            dynamic: true,
+            shape: Shape::Circle,
             icon_radius: 1.0,
             icon_size: 56.0,
             cols: 5,
-            rows: 6,
+            rows: 5,
+            dock_slots: 4,
             labels: true,
-            mono_icons: false,
-            clock: Clock::Glance,
+            themed_icons: false,
+            font: FontChoice::Preset,
+            font_scale: 1.0,
             search: Search::Bottom,
             drawer: DrawerStyle::Grid,
-            dock: DockStyle::Glass,
+            drawer_cols: 5,
+            suggestions: true,
+            app_library: false,
+            dock: DockStyle::Bare,
             dock_radius: 32.0,
-            font_scale: 1.0,
             wallpaper_dim: 0.0,
+            wallpaper_scroll: true,
             page_dots: true,
-            dock_apps: vec![],
-            pages: vec![vec![]],
-            hidden: vec![],
+            badges: Badges::Dot,
+            swipe_up: Action::Drawer,
+            swipe_down: Action::Notifications,
+            double_tap: Action::None,
+            lock_layout: false,
             auto_update: true,
             last_check: 0,
             seeded: false,
+            pages: vec![Page::default()],
+            dock_items: vec![],
+            hidden: vec![],
+            names: HashMap::new(),
+            launches: HashMap::new(),
+            next_id: 1,
         };
         c.apply_preset(Preset::Pixel);
         c
@@ -108,66 +286,113 @@ impl Default for Config {
 }
 
 impl Config {
-    /// Changes only the look. Apps and layout of the home screen stay as they are.
+    /// Changes the look and the signature widgets. The user's apps stay, they are only repacked.
     pub fn apply_preset(&mut self, p: Preset) {
         self.preset = p;
         match p {
             Preset::Nothing => {
                 self.mode = Mode::Dark;
                 self.accent = [215, 25, 33]; // Nothing red
-                self.icon_radius = 1.0;
-                self.icon_size = 52.0;
+                self.dynamic = false;
+                self.shape = Shape::Circle;
+                self.icon_size = 54.0;
                 self.cols = 4;
                 self.rows = 6;
+                self.dock_slots = 4;
                 self.labels = true;
-                self.mono_icons = true;
-                self.clock = Clock::DotMatrix;
+                self.themed_icons = true;
                 self.search = Search::Off;
-                self.drawer = DrawerStyle::List;
+                self.drawer = DrawerStyle::Grid;
+                self.drawer_cols = 4;
+                self.suggestions = false;
+                self.app_library = false;
                 self.dock = DockStyle::Bare;
-                self.dock_radius = 0.0;
-                self.font_scale = 0.95;
-                self.wallpaper_dim = 0.35;
+                self.font_scale = 0.92;
+                self.wallpaper_dim = 0.0;
                 self.page_dots = true;
+                self.badges = Badges::Dot;
+                self.swipe_down = Action::Notifications;
+                self.swipe_up = Action::Drawer;
             }
             Preset::Pixel => {
-                self.mode = Mode::Dark;
+                self.mode = Mode::Auto;
                 self.accent = [138, 180, 248];
-                self.icon_radius = 1.0;
+                self.dynamic = true;
+                self.shape = Shape::Circle;
                 self.icon_size = 56.0;
                 self.cols = 5;
-                self.rows = 6;
+                self.rows = 5;
+                self.dock_slots = 4;
                 self.labels = true;
-                self.mono_icons = false;
-                self.clock = Clock::Glance;
+                self.themed_icons = false;
                 self.search = Search::Bottom;
                 self.drawer = DrawerStyle::Grid;
-                self.dock = DockStyle::Glass;
-                self.dock_radius = 36.0;
+                self.drawer_cols = 5;
+                self.suggestions = true;
+                self.app_library = false;
+                self.dock = DockStyle::Bare;
                 self.font_scale = 1.0;
                 self.wallpaper_dim = 0.0;
-                self.page_dots = false;
+                self.page_dots = true;
+                self.badges = Badges::Dot;
+                self.swipe_down = Action::Notifications;
+                self.swipe_up = Action::Drawer;
             }
             Preset::Ios => {
-                self.mode = Mode::Dark;
+                self.mode = Mode::Auto;
                 self.accent = [10, 132, 255];
-                self.icon_radius = 0.45; // continuous-corner look
+                self.dynamic = false;
+                self.shape = Shape::Squircle;
                 self.icon_size = 60.0;
                 self.cols = 4;
                 self.rows = 6;
+                self.dock_slots = 4;
                 self.labels = true;
-                self.mono_icons = false;
-                self.clock = Clock::Off;
-                self.search = Search::Bottom;
+                self.themed_icons = false;
+                self.search = Search::Off;
                 self.drawer = DrawerStyle::Grid;
+                self.drawer_cols = 4;
+                self.suggestions = false;
+                self.app_library = true;
                 self.dock = DockStyle::Glass;
                 self.dock_radius = 38.0;
                 self.font_scale = 0.92;
                 self.wallpaper_dim = 0.0;
                 self.page_dots = true;
+                self.badges = Badges::Count;
+                self.swipe_down = Action::Search;
+                self.swipe_up = Action::None;
             }
-            Preset::Custom => {}
+            Preset::Custom => return,
         }
+        self.dock_items.truncate(self.dock_slots);
+        // swap the signature widgets
+        let sig: &[WidgetKind] = match p {
+            Preset::Nothing => &[WidgetKind::DotClock],
+            Preset::Pixel => &[WidgetKind::Glance],
+            Preset::Ios => &[WidgetKind::Calendar, WidgetKind::ClockAnalog],
+            Preset::Custom => &[],
+        };
+        let all = [WidgetKind::Glance, WidgetKind::DotClock, WidgetKind::Calendar, WidgetKind::ClockAnalog];
+        let mut items: Vec<Item> = self
+            .reading_order()
+            .into_iter()
+            .filter(|it| !matches!(it, Item::Widget { kind, .. } if all.contains(kind) && !sig.contains(kind)))
+            .collect();
+        let mut front: Vec<Item> = vec![];
+        for k in sig {
+            if !items.iter().any(|it| matches!(it, Item::Widget { kind, .. } if kind == k)) {
+                let id = self.new_id();
+                front.push(Item::Widget { id, kind: *k });
+            }
+        }
+        front.append(&mut items);
+        self.repack(front);
+    }
+
+    pub fn new_id(&mut self) -> u32 {
+        self.next_id += 1;
+        self.next_id
     }
 
     pub fn path(dir: &str) -> PathBuf {
@@ -175,10 +400,7 @@ impl Config {
     }
 
     pub fn load(dir: &str) -> Config {
-        std::fs::read_to_string(Self::path(dir))
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
+        std::fs::read_to_string(Self::path(dir)).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
     }
 
     pub fn save(&self, dir: &str) {
@@ -190,50 +412,201 @@ impl Config {
         }
     }
 
-    /// Where an app lives now, so one app is never on the home screen twice.
-    pub fn on_home(&self, pkg: &str) -> bool {
-        self.pages.iter().flatten().any(|p| p == pkg) || self.dock_apps.iter().any(|p| p == pkg)
+    // ───────────────────────────── layout ─────────────────────────────
+
+    pub fn per_page(&self) -> usize {
+        self.cols * self.rows
     }
 
-    pub fn remove_everywhere(&mut self, pkg: &str) {
-        for p in &mut self.pages {
-            p.retain(|x| x != pkg);
+    fn span_of(&self, it: &Item) -> (usize, usize) {
+        let (w, h) = it.span(self.cols);
+        (w.min(self.cols), h.min(self.rows))
+    }
+
+    /// Is the area free on `page`? `ignore` is an item that is about to move and does not count.
+    pub fn fits(&self, page: usize, col: usize, row: usize, w: usize, h: usize, ignore: Option<&str>) -> bool {
+        if col + w > self.cols || row + h > self.rows {
+            return false;
         }
-        self.dock_apps.retain(|x| x != pkg);
+        let Some(pg) = self.pages.get(page) else { return true };
+        !pg.items.iter().any(|p| {
+            if ignore.is_some_and(|k| p.item.key() == k) {
+                return false;
+            }
+            let (pw, ph) = self.span_of(&p.item);
+            col < p.col + pw && p.col < col + w && row < p.row + ph && p.row < row + h
+        })
     }
 
-    pub fn add_to_home(&mut self, pkg: &str, page: usize) {
-        self.remove_everywhere(pkg);
-        let per = self.cols * self.rows;
-        let mut i = page.min(self.pages.len().saturating_sub(1));
-        while self.pages[i].len() >= per {
-            i += 1;
-            if i == self.pages.len() {
-                self.pages.push(vec![]);
+    pub fn free_spot(&self, page: usize, w: usize, h: usize) -> Option<(usize, usize)> {
+        for r in 0..self.rows {
+            for c in 0..self.cols {
+                if self.fits(page, c, r, w, h, None) {
+                    return Some((c, r));
+                }
             }
         }
-        self.pages[i].push(pkg.to_string());
+        None
     }
 
-    pub fn add_to_dock(&mut self, pkg: &str) {
-        self.remove_everywhere(pkg);
-        if self.dock_apps.len() >= 5 {
-            self.dock_apps.pop();
+    /// Nearest free spot to (col,row) on this page for something of size w x h.
+    pub fn nearest_free(&self, page: usize, col: usize, row: usize, w: usize, h: usize, ignore: Option<&str>) -> Option<(usize, usize)> {
+        let mut best: Option<(usize, (usize, usize))> = None;
+        for r in 0..self.rows {
+            for c in 0..self.cols {
+                if self.fits(page, c, r, w, h, ignore) {
+                    let d = c.abs_diff(col).pow(2) + r.abs_diff(row).pow(2);
+                    if best.is_none_or(|(bd, _)| d < bd) {
+                        best = Some((d, (c, r)));
+                    }
+                }
+            }
         }
-        self.dock_apps.push(pkg.to_string());
+        best.map(|(_, p)| p)
     }
 
-    /// Drop empty trailing pages and apps that were uninstalled.
-    pub fn tidy(&mut self, installed: &dyn Fn(&str) -> bool) {
-        for p in &mut self.pages {
-            p.retain(|x| installed(x));
+    pub fn item_at(&self, page: usize, col: usize, row: usize) -> Option<usize> {
+        let pg = self.pages.get(page)?;
+        pg.items.iter().position(|p| {
+            let (w, h) = self.span_of(&p.item);
+            col >= p.col && col < p.col + w && row >= p.row && row < p.row + h
+        })
+    }
+
+    /// Puts an item on the first free spot of any page, adding a page if everything is full.
+    pub fn insert_auto(&mut self, item: Item) {
+        let (w, h) = self.span_of(&item);
+        for pi in 0..self.pages.len() {
+            if let Some((c, r)) = self.free_spot(pi, w, h) {
+                self.pages[pi].items.push(Placed { item, col: c, row: r });
+                return;
+            }
         }
-        self.dock_apps.retain(|x| installed(x));
-        while self.pages.len() > 1 && self.pages.last().is_some_and(|p| p.is_empty()) {
+        self.pages.push(Page::default());
+        self.pages.last_mut().unwrap().items.push(Placed { item, col: 0, row: 0 });
+    }
+
+    pub fn place(&mut self, page: usize, col: usize, row: usize, item: Item) {
+        while self.pages.len() <= page {
+            self.pages.push(Page::default());
+        }
+        self.pages[page].items.push(Placed { item, col, row });
+    }
+
+    /// Every item on the pages, page by page, top to bottom, left to right.
+    pub fn reading_order(&self) -> Vec<Item> {
+        let mut v: Vec<(usize, usize, usize, Item)> = vec![];
+        for (pi, pg) in self.pages.iter().enumerate() {
+            for p in &pg.items {
+                v.push((pi, p.row, p.col, p.item.clone()));
+            }
+        }
+        v.sort_by_key(|(pi, r, c, _)| (*pi, *r, *c));
+        v.into_iter().map(|(_, _, _, i)| i).collect()
+    }
+
+    /// Lays exactly these items out again from the top-left, page after page. Used when the grid or the preset changes.
+    pub fn repack(&mut self, items: Vec<Item>) {
+        self.pages = vec![Page::default()];
+        for it in items {
+            self.insert_auto(it);
+        }
+        self.dock_items.truncate(self.dock_slots);
+        self.tidy_pages();
+    }
+
+    pub fn tidy_pages(&mut self) {
+        while self.pages.len() > 1 && self.pages.last().is_some_and(|p| p.items.is_empty()) {
             self.pages.pop();
         }
         if self.pages.is_empty() {
-            self.pages.push(vec![]);
+            self.pages.push(Page::default());
+        }
+    }
+
+    pub fn all_apps_on_home(&self) -> Vec<&str> {
+        fn add<'a>(v: &mut Vec<&'a str>, it: &'a Item) {
+            match it {
+                Item::App(p) => v.push(p.as_str()),
+                Item::Folder { apps, .. } => v.extend(apps.iter().map(|s| s.as_str())),
+                _ => {}
+            }
+        }
+        let mut v = vec![];
+        for pg in &self.pages {
+            for p in &pg.items {
+                add(&mut v, &p.item);
+            }
+        }
+        for it in &self.dock_items {
+            add(&mut v, it);
+        }
+        v
+    }
+
+    pub fn on_home(&self, pkg: &str) -> bool {
+        self.all_apps_on_home().contains(&pkg)
+    }
+
+    /// Takes an app off the home screen wherever it is. A folder left with one app turns back into that app.
+    pub fn remove_app(&mut self, pkg: &str) {
+        fn prune(it: Item, pkg: &str) -> Option<Item> {
+            match it {
+                Item::App(p) if p == pkg => None,
+                Item::Folder { id, name, mut apps } => {
+                    apps.retain(|a| a != pkg);
+                    match apps.len() {
+                        0 => None,
+                        1 => Some(Item::App(apps.remove(0))),
+                        _ => Some(Item::Folder { id, name, apps }),
+                    }
+                }
+                other => Some(other),
+            }
+        }
+        for pg in self.pages.iter_mut() {
+            pg.items = pg.items.drain(..).filter_map(|p| prune(p.item, pkg).map(|item| Placed { item, col: p.col, row: p.row })).collect();
+        }
+        self.dock_items = self.dock_items.drain(..).filter_map(|it| prune(it, pkg)).collect();
+    }
+
+    pub fn remove_app_if_app(&mut self, it: &Item) {
+        if let Item::App(p) = it {
+            self.remove_app(p);
+        }
+    }
+
+    pub fn remove_key(&mut self, key: &str) -> Option<Item> {
+        for pg in self.pages.iter_mut() {
+            if let Some(i) = pg.items.iter().position(|p| p.item.key() == key) {
+                return Some(pg.items.remove(i).item);
+            }
+        }
+        if let Some(i) = self.dock_items.iter().position(|it| it.key() == key) {
+            return Some(self.dock_items.remove(i));
+        }
+        None
+    }
+
+    /// Drop everything that is no longer installed.
+    pub fn tidy(&mut self, installed: &dyn Fn(&str) -> bool) {
+        let gone: Vec<String> = self.all_apps_on_home().into_iter().filter(|p| !installed(p)).map(String::from).collect();
+        for g in gone {
+            self.remove_app(&g);
+        }
+        self.hidden.retain(|p| installed(p));
+        self.tidy_pages();
+    }
+
+    pub fn label<'a>(&'a self, app: &'a crate::platform::App) -> &'a str {
+        self.names.get(&app.pkg).map(|s| s.as_str()).unwrap_or(&app.label)
+    }
+
+    pub fn dark(&self, system_dark: bool) -> bool {
+        match self.mode {
+            Mode::Dark => true,
+            Mode::Light => false,
+            Mode::Auto => system_dark,
         }
     }
 }

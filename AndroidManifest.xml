@@ -14,7 +14,7 @@
         android:theme="@style/Theme.Lumen">
 
         <activity
-            android:name="android.app.NativeActivity"
+            android:name="dev.voer.lumen.LumenActivity"
             android:exported="true"
             android:launchMode="singleTask"
             android:stateNotNeeded="true"
@@ -35,5 +35,26 @@
         </activity>
 
         <receiver android:name="dev.voer.lumen.InstallReceiver" android:exported="false" />
+
+        <service
+            android:name="dev.voer.lumen.BadgeService"
+            android:exported="true"
+            android:label="Lumen badges"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+
+        <service
+            android:name="dev.voer.lumen.LockService"
+            android:exported="true"
+            android:label="Lumen double tap to lock"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data android:name="android.accessibilityservice" android:resource="@xml/lock_service" />
+        </service>
     </application>
 </manifest>

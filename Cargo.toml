@@ -1,22 +1,28 @@
 [package]
 name = "lumen"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "MIT"
 
 [dependencies]
-android-activity = { version = "0.6.1", features = ["native-activity"] }
-android_logger = "0.15.1"
-eframe = { version = "0.37.0", default-features = false, features = ["glow", "android-native-activity"] }
-jni = "0.21"
+egui = "0.37.0"
 log = "0.4.34"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 ureq = { version = "3.5.0", features = ["json"] }
 
+[target.'cfg(target_os = "android")'.dependencies]
+android-activity = { version = "0.6.1", features = ["native-activity"] }
+android_logger = "0.15.1"
+eframe = { version = "0.37.0", default-features = false, features = ["glow", "android-native-activity"] }
+jni = "0.21"
+
+[dev-dependencies]
+egui_kittest = { version = "0.37.0", features = ["wgpu", "snapshot"] }
+
 [lib]
 name = "lumen"
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 
 [profile.release]
 opt-level = 3

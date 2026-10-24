@@ -1,7 +1,7 @@
 //! Updates from GitHub releases, no cable needed. Same idea as Hearth: look at the newest release,
 //! download the APK, let Android's installer put it over the running version.
 
-use crate::android;
+use crate::platform as android;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 

@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="lock_service_description">Lets Lumen lock the screen when you double tap the home screen. Lumen does not read anything on your screen.</string>
+</resources>

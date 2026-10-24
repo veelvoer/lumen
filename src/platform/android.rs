@@ -1,36 +1,16 @@
 //! The only place that talks to Android (through JNI). Everything else is plain Rust.
 
+use super::PACKAGE;
 use jni::errors::Result as JResult;
 use jni::objects::{GlobalRef, JObject, JString, JValue};
 use jni::{JNIEnv, JavaVM};
+use super::{App, Battery, Category, Dynamic, Haptic, Insets, RawIcon};
+use std::collections::HashMap;
 use std::sync::OnceLock;
 
 static VM: OnceLock<JavaVM> = OnceLock::new();
 static ACTIVITY: OnceLock<GlobalRef> = OnceLock::new();
 
-pub const PACKAGE: &str = "dev.voer.lumen";
-
-#[derive(Clone, Debug)]
-pub struct App {
-    pub pkg: String,
-    pub cls: String,
-    pub label: String,
-    pub key: String, // lowercase label, for sorting and search
-}
-
-pub struct RawIcon {
-    pub size: usize,
-    pub rgba: Vec<u8>, // premultiplied
-    pub mono: bool,    // only the alpha channel carries the glyph
-}
-
-#[derive(Clone, Copy, Default, Debug)]
-pub struct Insets {
-    pub left: f32,
-    pub top: f32,
-    pub right: f32,
-    pub bottom: f32,
-}
 
 pub fn init(app: &android_activity::AndroidApp) {
     let vm = unsafe { JavaVM::from_raw(app.vm_as_ptr() as *mut _) }.expect("vm");
@@ -113,6 +93,8 @@ pub fn launcher_apps() -> Vec<App> {
                 let ai = env.get_field(&ri, "activityInfo", "Landroid/content/pm/ActivityInfo;")?.l()?;
                 let pkg = env.get_field(&ai, "packageName", "Ljava/lang/String;")?.l()?;
                 let cls = env.get_field(&ai, "name", "Ljava/lang/String;")?.l()?;
+                let appinfo = env.get_field(&ai, "applicationInfo", "Landroid/content/pm/ApplicationInfo;")?.l()?;
+                let cat = env.get_field(&appinfo, "category", "I")?.i()?;
                 let label = env.call_method(&ri, "loadLabel", "(Landroid/content/pm/PackageManager;)Ljava/lang/CharSequence;", &[JValue::Object(&pm)])?.l()?;
                 let label = env.call_method(&label, "toString", "()Ljava/lang/String;", &[])?.l()?;
                 let (pkg, cls, label) = (jstr(env, &pkg), jstr(env, &cls), jstr(env, &label));
@@ -120,7 +102,8 @@ pub fn launcher_apps() -> Vec<App> {
                     return Ok(None);
                 }
                 let key = label.to_lowercase();
-                Ok(Some(App { pkg, cls, label, key }))
+                let category = Category::from_android(cat, &pkg);
+                Ok(Some(App { pkg, cls, label, key, category }))
             });
             if let Ok(Some(a)) = r {
                 v.push(a);
@@ -431,4 +414,192 @@ pub fn expand_notifications() {
         env.call_method(&sb, "expandNotificationsPanel", "()V", &[])?;
         Ok(())
     });
+}
+
+fn glue<'a>(env: &mut JNIEnv<'a>, act: &JObject, name: &str) -> JResult<jni::objects::JClass<'a>> {
+    // Native threads only see system classes, so ask the app's own class loader for ours.
+    let loader = env.call_method(act, "getClassLoader", "()Ljava/lang/ClassLoader;", &[])?.l()?;
+    let n = env.new_string(name)?;
+    let cls = env.call_method(&loader, "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;", &[JValue::Object(&n)])?.l()?;
+    Ok(jni::objects::JClass::from(cls))
+}
+
+pub fn expand_quick_settings() {
+    with(|env, act| {
+        let name = env.new_string("statusbar")?;
+        let sb = env.call_method(act, "getSystemService", "(Ljava/lang/String;)Ljava/lang/Object;", &[JValue::Object(&name)])?.l()?;
+        if !sb.is_null() {
+            env.call_method(&sb, "expandSettingsPanel", "()V", &[])?;
+        }
+        Ok(())
+    });
+}
+
+pub fn battery() -> Battery {
+    with(|env, act| {
+        let f = env.new_string("android.intent.action.BATTERY_CHANGED")?;
+        let filter = env.new_object("android/content/IntentFilter", "(Ljava/lang/String;)V", &[JValue::Object(&f)])?;
+        let none = JObject::null();
+        let i = env.call_method(act, "registerReceiver", "(Landroid/content/BroadcastReceiver;Landroid/content/IntentFilter;)Landroid/content/Intent;", &[JValue::Object(&none), JValue::Object(&filter)])?.l()?;
+        let get = |env: &mut JNIEnv, k: &str, d: i32| -> JResult<i32> {
+            let k = env.new_string(k)?;
+            env.call_method(&i, "getIntExtra", "(Ljava/lang/String;I)I", &[JValue::Object(&k), JValue::Int(d)])?.i()
+        };
+        let (l, sc, plugged) = (get(env, "level", 0)?, get(env, "scale", 100)?, get(env, "plugged", 0)?);
+        Ok(Battery { level: (l * 100 / sc.max(1)).clamp(0, 100) as u8, charging: plugged != 0 })
+    })
+    .unwrap_or(Battery { level: 100, charging: false })
+}
+
+pub fn dynamic_colors() -> Option<Dynamic> {
+    if android_sdk() < 31 {
+        return None;
+    }
+    with(|env, act| {
+        const SHADES: [&str; 13] = ["0", "10", "50", "100", "200", "300", "400", "500", "600", "700", "800", "900", "1000"];
+        let mut ramp = |env: &mut JNIEnv, name: &str| -> JResult<[[u8; 3]; 13]> {
+            let mut out = [[0u8; 3]; 13];
+            for (i, sh) in SHADES.iter().enumerate() {
+                let id = env.get_static_field("android/R$color", format!("system_{name}_{sh}"), "I")?.i()?;
+                let c = env.call_method(act, "getColor", "(I)I", &[JValue::Int(id)])?.i()? as u32;
+                out[i] = [(c >> 16) as u8, (c >> 8) as u8, c as u8];
+            }
+            Ok(out)
+        };
+        Ok(Dynamic { accent1: ramp(env, "accent1")?, neutral1: ramp(env, "neutral1")?, neutral2: ramp(env, "neutral2")? })
+    })
+}
+
+pub fn haptic(kind: Haptic) {
+    with(|env, act| {
+        let cls = glue(env, act, "dev.voer.lumen.Glue")?;
+        let k = match kind { Haptic::Lift => 0, Haptic::Drop => 1, Haptic::Tick => 2 };
+        env.call_static_method(&cls, "haptic", "(Landroid/app/Activity;I)V", &[JValue::Object(act), JValue::Int(k)])?;
+        Ok(())
+    });
+}
+
+pub fn set_wallpaper_offset(x: f32) {
+    with(|env, act| {
+        let cls = glue(env, act, "dev.voer.lumen.Glue")?;
+        env.call_static_method(&cls, "wallpaperOffset", "(Landroid/app/Activity;F)V", &[JValue::Object(act), JValue::Float(x)])?;
+        Ok(())
+    });
+}
+
+/// Unread notification counts per package, from the notification listener (empty until the user allows it).
+pub fn badges() -> HashMap<String, u32> {
+    with(|env, act| {
+        let cls = glue(env, act, "dev.voer.lumen.Glue")?;
+        let s = env.call_static_method(&cls, "badges", "()Ljava/lang/String;", &[])?.l()?;
+        let text = jstr(env, &s);
+        Ok(text.lines().filter_map(|l| l.split_once('=')).filter_map(|(p, n)| Some((p.to_string(), n.parse().ok()?))).collect())
+    })
+    .unwrap_or_default()
+}
+
+fn secure_setting_has(key: &str, needle: &str) -> bool {
+    with(|env, act| {
+        let cr = env.call_method(act, "getContentResolver", "()Landroid/content/ContentResolver;", &[])?.l()?;
+        let k = env.new_string(key)?;
+        let v = env.call_static_method("android/provider/Settings$Secure", "getString", "(Landroid/content/ContentResolver;Ljava/lang/String;)Ljava/lang/String;", &[JValue::Object(&cr), JValue::Object(&k)])?.l()?;
+        Ok(jstr(env, &v).contains(needle))
+    })
+    .unwrap_or(false)
+}
+
+pub fn badge_access() -> bool {
+    secure_setting_has("enabled_notification_listeners", PACKAGE)
+}
+
+pub fn ask_badge_access() {
+    view_intent_plain("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS");
+}
+
+pub fn lock_enabled() -> bool {
+    secure_setting_has("enabled_accessibility_services", &format!("{PACKAGE}/"))
+}
+
+pub fn ask_lock_access() {
+    view_intent_plain("android.settings.ACCESSIBILITY_SETTINGS");
+}
+
+/// Locks the screen through the accessibility service (the only way that keeps fingerprint unlock working).
+pub fn lock_screen() -> bool {
+    with(|env, act| {
+        let cls = glue(env, act, "dev.voer.lumen.Glue")?;
+        env.call_static_method(&cls, "lock", "()Z", &[])?.z()
+    })
+    .unwrap_or(false)
+}
+
+/// True once after the Home button was pressed while Lumen was already open.
+pub fn take_home_pressed() -> bool {
+    with(|env, act| {
+        let cls = glue(env, act, "dev.voer.lumen.Glue")?;
+        env.call_static_method(&cls, "takeHome", "()Z", &[])?.z()
+    })
+    .unwrap_or(false)
+}
+
+fn view_intent_plain(action: &str) {
+    with(|env, act| {
+        let a = env.new_string(action)?;
+        let intent = env.new_object("android/content/Intent", "(Ljava/lang/String;)V", &[JValue::Object(&a)])?;
+        start(env, act, &intent)
+    });
+}
+
+pub fn search_web(q: &str) {
+    with(|env, act| {
+        let a = env.new_string("android.intent.action.WEB_SEARCH")?;
+        let intent = env.new_object("android/content/Intent", "(Ljava/lang/String;)V", &[JValue::Object(&a)])?;
+        let k = env.new_string("query")?;
+        let v = env.new_string(q)?;
+        env.call_method(&intent, "putExtra", "(Ljava/lang/String;Ljava/lang/String;)Landroid/content/Intent;", &[JValue::Object(&k), JValue::Object(&v)])?;
+        start(env, act, &intent)
+    })
+    .or_else(|| {
+        let enc: String = q.bytes().map(|b| if b.is_ascii_alphanumeric() { (b as char).to_string() } else { format!("%{b:02X}") }).collect();
+        open_url(&format!("https://www.google.com/search?q={enc}"));
+        Some(())
+    });
+}
+
+pub fn clipboard_get() -> String {
+    with(|env, act| {
+        let n = env.new_string("clipboard")?;
+        let cm = env.call_method(act, "getSystemService", "(Ljava/lang/String;)Ljava/lang/Object;", &[JValue::Object(&n)])?.l()?;
+        let clip = env.call_method(&cm, "getPrimaryClip", "()Landroid/content/ClipData;", &[])?.l()?;
+        if clip.is_null() {
+            return Ok(String::new());
+        }
+        let item = env.call_method(&clip, "getItemAt", "(I)Landroid/content/ClipData$Item;", &[JValue::Int(0)])?.l()?;
+        let t = env.call_method(&item, "coerceToText", "(Landroid/content/Context;)Ljava/lang/CharSequence;", &[JValue::Object(act)])?.l()?;
+        let t = env.call_method(&t, "toString", "()Ljava/lang/String;", &[])?.l()?;
+        Ok(jstr(env, &t))
+    })
+    .unwrap_or_default()
+}
+
+pub fn clipboard_set(text: &str) {
+    with(|env, act| {
+        let n = env.new_string("clipboard")?;
+        let cm = env.call_method(act, "getSystemService", "(Ljava/lang/String;)Ljava/lang/Object;", &[JValue::Object(&n)])?.l()?;
+        let (l, t) = (env.new_string("Lumen")?, env.new_string(text)?);
+        let clip = env.call_static_method("android/content/ClipData", "newPlainText", "(Ljava/lang/CharSequence;Ljava/lang/CharSequence;)Landroid/content/ClipData;", &[JValue::Object(&l), JValue::Object(&t)])?.l()?;
+        env.call_method(&cm, "setPrimaryClip", "(Landroid/content/ClipData;)V", &[JValue::Object(&clip)])?;
+        Ok(())
+    });
+}
+
+/// Is the phone in dark mode right now?
+pub fn is_dark() -> bool {
+    with(|env, act| {
+        let res = env.call_method(act, "getResources", "()Landroid/content/res/Resources;", &[])?.l()?;
+        let cfg = env.call_method(&res, "getConfiguration", "()Landroid/content/res/Configuration;", &[])?.l()?;
+        let ui = env.get_field(&cfg, "uiMode", "I")?.i()?;
+        Ok(ui & 0x30 == 0x20)
+    })
+    .unwrap_or(true)
 }

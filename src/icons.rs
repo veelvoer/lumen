@@ -1,8 +1,9 @@
 //! Icons are loaded on two worker threads the moment they are first needed, masked to the chosen
 //! shape in Rust, and kept as GPU textures. The UI thread never waits for Android.
 
-use crate::android::{self, App};
-use eframe::egui::{ColorImage, Context, TextureHandle, TextureOptions};
+use crate::config::Shape;
+use crate::platform::{self, App};
+use egui::{ColorImage, Context, TextureHandle, TextureOptions};
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
@@ -11,13 +12,20 @@ pub const ICON_PX: i32 = 168;
 
 pub struct Icon {
     pub tex: TextureHandle,
+    /// only the glyph, to be tinted and put on a plate
+    pub mono: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Style {
+    pub shape: Shape,
+    pub radius: f32,
     pub mono: bool,
 }
 
 struct Req {
     app: App,
-    radius: f32,
-    mono: bool,
+    style: Style,
     generation: u32,
 }
 
@@ -34,13 +42,12 @@ pub struct Icons {
     tx: Sender<Req>,
     rx: Receiver<Done>,
     ctx: Context,
-    radius: f32,
-    mono: bool,
+    style: Style,
     generation: u32,
 }
 
 impl Icons {
-    pub fn new(ctx: &Context, radius: f32, mono: bool) -> Icons {
+    pub fn new(ctx: &Context, style: Style) -> Icons {
         let (tx, rx_req) = channel::<Req>();
         let (tx_done, rx) = channel::<Done>();
         let rx_req = Arc::new(Mutex::new(rx_req));
@@ -51,10 +58,10 @@ impl Icons {
                     Ok(Ok(r)) => r,
                     _ => return,
                 };
-                let img = android::load_icon(&req.app, ICON_PX, req.mono).map(|raw| {
+                let img = platform::load_icon(&req.app, ICON_PX, req.style.mono).map(|raw| {
                     let mut rgba = raw.rgba;
                     if !raw.mono {
-                        mask(&mut rgba, raw.size, req.radius);
+                        mask(&mut rgba, raw.size, req.style);
                     }
                     (ColorImage::from_rgba_premultiplied([raw.size, raw.size], &rgba), raw.mono)
                 });
@@ -62,7 +69,7 @@ impl Icons {
                 ctx.request_repaint();
             });
         }
-        Icons { tex: HashMap::new(), pending: HashSet::new(), stale: HashSet::new(), tx, rx, ctx: ctx.clone(), radius, mono, generation: 0 }
+        Icons { tex: HashMap::new(), pending: HashSet::new(), stale: HashSet::new(), tx, rx, ctx: ctx.clone(), style, generation: 0 }
     }
 
     /// Call once per frame: turns finished icons into textures.
@@ -82,38 +89,55 @@ impl Icons {
 
     pub fn get(&mut self, app: &App) -> Option<&Icon> {
         if (!self.tex.contains_key(&app.pkg) || self.stale.contains(&app.pkg)) && self.pending.insert(app.pkg.clone()) {
-            let _ = self.tx.send(Req { app: app.clone(), radius: self.radius, mono: self.mono, generation: self.generation });
+            let _ = self.tx.send(Req { app: app.clone(), style: self.style, generation: self.generation });
         }
         self.tex.get(&app.pkg)
     }
 
     /// Shape or style changed: reload what is on screen, keep the old pictures until the new ones arrive.
-    pub fn restyle(&mut self, radius: f32, mono: bool) {
-        if (radius - self.radius).abs() < 0.001 && mono == self.mono {
+    pub fn restyle(&mut self, style: Style) {
+        if style == self.style {
             return;
         }
-        self.radius = radius;
-        self.mono = mono;
+        self.style = style;
         self.generation += 1;
         self.pending.clear();
         self.stale = self.tex.keys().cloned().collect();
     }
+
+    pub fn pending_count(&self) -> usize {
+        self.pending.len()
+    }
 }
 
-/// Rounded square with corner radius `r` (0 = square, 1 = circle), anti-aliased.
-fn mask(rgba: &mut [u8], size: usize, r: f32) {
-    let r = r.clamp(0.0, 1.0);
+/// Signed distance (in pixels, negative inside) from the edge of the icon shape. x and y are pixel offsets from the center.
+fn distance(style: Style, half: f32, x: f32, y: f32) -> f32 {
+    let (px, py) = (x.abs(), y.abs());
+    match style.shape {
+        Shape::Circle => (px * px + py * py).sqrt() - half,
+        Shape::Squircle => {
+            // iOS style continuous corner: a superellipse of order 5
+            let n = 5.0f32;
+            let r = ((px / half).powf(n) + (py / half).powf(n)).powf(1.0 / n);
+            (r - 1.0) * half
+        }
+        Shape::Rounded | Shape::Square => {
+            let rad = if style.shape == Shape::Square { half * 0.12 } else { style.radius.clamp(0.0, 1.0) * half };
+            let (qx, qy) = (px - (half - rad), py - (half - rad));
+            (qx.max(0.0).powi(2) + qy.max(0.0).powi(2)).sqrt() + qx.max(qy).min(0.0) - rad
+        }
+    }
+}
+
+/// Cuts the icon to the shape, anti-aliased.
+fn mask(rgba: &mut [u8], size: usize, style: Style) {
     let half = size as f32 / 2.0;
-    let rad = r * half;
     for y in 0..size {
         for x in 0..size {
-            let (px, py) = ((x as f32 + 0.5 - half).abs(), (y as f32 + 0.5 - half).abs());
-            let (qx, qy) = (px - (half - rad), py - (half - rad));
-            let d = (qx.max(0.0).powi(2) + qy.max(0.0).powi(2)).sqrt() + qx.max(qy).min(0.0) - rad;
+            let d = distance(style, half, x as f32 + 0.5 - half, y as f32 + 0.5 - half);
             let a = (0.5 - d).clamp(0.0, 1.0);
             if a < 1.0 {
-                let p = &mut rgba[(y * size + x) * 4..][..4];
-                for c in p.iter_mut() {
+                for c in rgba[(y * size + x) * 4..][..4].iter_mut() {
                     *c = (*c as f32 * a) as u8;
                 }
             }

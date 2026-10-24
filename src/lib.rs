@@ -19,6 +19,7 @@ mod widgets;
 pub use app::Lumen;
 pub use config::{Config, Mode, Preset};
 pub use platform::files_dir;
+pub use settings::SettingsPage;
 
 #[cfg(target_os = "android")]
 mod entry {

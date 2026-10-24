@@ -183,3 +183,15 @@ fn folders_menu_picker_search() {
     let mut h = make(Preset::Pixel, |c| c.mode = lumen::Mode::Light);
     shot(&mut h, "pixel-light-home");
 }
+
+#[test]
+fn settings_subpages() {
+    use lumen::SettingsPage as P;
+    for (page, name) in [(P::Look, "look"), (P::Home, "home"), (P::Gestures, "gestures"), (P::Icons, "icons")] {
+        let mut h = make(Preset::Ios, |_| {});
+        lumen(&mut h).open_settings();
+        lumen(&mut h).settings_stack.push(page);
+        settle(&mut h);
+        shot(&mut h, &format!("settings-{name}"));
+    }
+}

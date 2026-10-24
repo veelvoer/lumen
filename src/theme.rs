@@ -208,6 +208,8 @@ pub fn apply(ctx: &Context, cfg: &Config, p: &Palette) {
     v.widgets.inactive.bg_stroke = Stroke::NONE;
     v.widgets.hovered.bg_stroke = Stroke::NONE;
     v.widgets.noninteractive.bg_stroke = Stroke::NONE;
+    v.slider_trailing_fill = true;
+    v.handle_shape = egui::style::HandleShape::Circle;
     v.window_stroke = Stroke::new(1.0, p.glass_line);
     v.window_corner_radius = CornerRadius::same(24);
     ctx.set_visuals(v);

@@ -58,8 +58,15 @@ mod entry {
     #[unsafe(no_mangle)]
     fn android_main(app: android_activity::AndroidApp) {
         android_logger::init_once(android_logger::Config::default().with_max_level(log::LevelFilter::Info).with_tag("lumen"));
-        std::panic::set_hook(Box::new(|i| log::error!("panic: {i}")));
         platform::init(&app);
+        let crash_dir = platform::files_dir();
+        let _ = app::FILES_DIR.set(crash_dir.clone());
+        std::panic::set_hook(Box::new(move |i| {
+            log::error!("panic: {i}");
+            let bt = std::backtrace::Backtrace::force_capture().to_string();
+            let text = format!("rust panic: {i}\n{}", &bt[..bt.len().min(1200)]);
+            let _ = std::fs::write(std::path::Path::new(&crash_dir).join("last-crash.txt"), text);
+        }));
 
         let options = eframe::NativeOptions {
             android_app: Some(app),

@@ -168,6 +168,7 @@ pub struct Lumen {
     /// 1 right after coming back from an app, then eases to 0: the home screen settles in
     pub resume_t: Spring,
     pub jig_t: f32,
+    pub pager_start: f32,
     pub edit_t: Spring,
     last_launch: f64,
     pub system_dark: bool,
@@ -279,6 +280,7 @@ impl Lumen {
             last_scan: std::time::Instant::now(),
             resume_t: Spring::at(0.0),
             jig_t: 0.0,
+            pager_start: 0.0,
             edit_t: Spring::at(0.0),
             last_launch: -10.0,
             system_dark,
@@ -965,7 +967,7 @@ impl Lumen {
         let r = ctx.content_rect();
         let k = ctx.pixels_per_point();
         format!(
-            "Lumen {}\nDevice: {} {} (Android API {})\nMemory: {} MB{}, {} cores\nScreen: {:.0}x{:.0} px, density {:.2}, {:.0} Hz\nGraphics: {}\nMode: {:?}, light is {}{}\nWallpaper: {}\nFrame time while moving: {:.1} ms (budget {:.1} ms)\nApps: {}, icons loaded {} ({} px, {} atlas pages)\nPreset: {:?}, grid {}x{}, pages {}\nCrashes and kills: {}",
+            "Lumen {}\nDevice: {} {} (Android API {})\nMemory: {} MB{}, {} cores\nScreen: {:.0}x{:.0} px, density {:.2}, {:.0} Hz\nGraphics: {}\nMode: {:?}, light is {}{}\nWallpaper: {}\nFrame time while moving: {:.1} ms (budget {:.1} ms)\nApps: {}, icons loaded {} ({} px, {} atlas pages)\nPreset: {:?}, grid {}x{}, pages {}\nCrashes and kills: {}\nLast crash: {}",
             self.version,
             self.device.manufacturer,
             self.device.model,
@@ -997,12 +999,25 @@ impl Lumen {
                 let e = EXIT.get_or_init(platform::exit_info);
                 if e.trim().is_empty() { "none".to_string() } else { format!("\n{}", e.trim_end()) }
             },
+            {
+                let c = last_crash();
+                if c.trim().is_empty() { "none".to_string() } else { format!("\n{}", c.trim_end()) }
+            },
         )
     }
 
     pub fn note_cpu(&mut self, c: f32) {
         self.perf.cpu(c);
     }
+}
+
+/// Where the app keeps its files; set once at start.
+pub static FILES_DIR: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// What the last crash left behind (Java or Rust), for the report.
+fn last_crash() -> String {
+    let Some(dir) = FILES_DIR.get() else { return String::new() };
+    std::fs::read_to_string(std::path::Path::new(dir).join("last-crash.txt")).map(|t| t.chars().take(700).collect()).unwrap_or_default()
 }
 
 pub fn spawn_app_scan(ctx: &Context) -> Receiver<Vec<App>> {

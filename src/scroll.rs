@@ -4,9 +4,10 @@
 use egui::{Context, Pos2, Rect, ScrollArea, Ui};
 
 /// points per second; a hard flick on a phone is 5000 to 8000 pixels per second
-const MAX_FLING: f32 = 3200.0;
+const MAX_FLING: f32 = 5200.0;
 /// how fast a fling slows down: the speed is multiplied by e^(-FRICTION * seconds)
-const FRICTION: f32 = 3.3;
+/// UIScrollView's normal deceleration, 0.998 per millisecond: 0.998^1000 = e^-2
+const FRICTION: f32 = 2.0;
 const SLOP: f32 = 6.0;
 
 #[derive(Default, Clone, Debug)]

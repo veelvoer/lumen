@@ -29,6 +29,18 @@ public final class LumenActivity extends NativeActivity {
             android.os.Process.killProcess(android.os.Process.myPid());
         }
         alive++;
+        final java.io.File crashFile = new java.io.File(getFilesDir(), "last-crash.txt");
+        final Thread.UncaughtExceptionHandler prev = Thread.getDefaultUncaughtExceptionHandler();
+        Thread.setDefaultUncaughtExceptionHandler((t, e) -> {
+            try {
+                java.io.StringWriter sw = new java.io.StringWriter();
+                e.printStackTrace(new java.io.PrintWriter(sw));
+                java.io.FileWriter w = new java.io.FileWriter(crashFile);
+                w.write("java crash in " + t.getName() + ": " + sw);
+                w.close();
+            } catch (Throwable ignored) {}
+            if (prev != null) prev.uncaughtException(t, e);
+        });
         super.onCreate(b);
         // NativeActivity asks for an opaque RGB_565 window; the wallpaper can only show through a translucent one
         getWindow().setFormat(android.graphics.PixelFormat.TRANSLUCENT);

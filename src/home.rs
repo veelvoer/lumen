@@ -1092,6 +1092,7 @@ impl Lumen {
                         self.touch = Touch::Spent;
                     } else if d.x.abs() > d.y.abs() {
                         self.touch = Touch::Pager;
+                        self.pager_start = self.page.round();
                         self.page -= d.x / w;
                     } else if self.cfg.app_library && self.page.round() as usize == self.cfg.pages.len() && (self.lib_scroller.offset > 0.5 || d.y < 0.0) {
                         self.touch = Touch::LibraryScroll;
@@ -1143,7 +1144,10 @@ impl Lumen {
                     // carry the finger's speed into the spring so the page keeps moving the way it was flicked
                     let v = -vel.x / w;
                     self.page_v = v;
-                    self.page_target = (self.page + v * 0.2).round().clamp(0.0, max);
+                    // UIKit's own rule: project where the flick would coast to (rate 0.998 per ms, v/1000 * r / (1 - r)),
+                    // pick the nearest page, but never skip further than the neighbour of where the drag began
+                    let projected = self.page + v * (0.998 / (1.0 - 0.998) / 1000.0);
+                    self.page_target = projected.round().clamp(self.pager_start - 1.0, self.pager_start + 1.0).clamp(0.0, max);
                     self.touch = Touch::Idle;
                 }
             }
@@ -1152,7 +1156,7 @@ impl Lumen {
                 if !down {
                     let v = -vel.y / h;
                     self.drawer_v = v;
-                    self.drawer_open = self.drawer + v * 0.18 > 0.5;
+                    self.drawer_open = self.drawer + v * (0.998 / (1.0 - 0.998) / 1000.0) > 0.5;
                     self.touch = Touch::Idle;
                 }
             }

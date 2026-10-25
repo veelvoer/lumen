@@ -381,7 +381,7 @@ impl Lumen {
                 let step = strip.height() / letters.len() as f32;
                 // raw pointer, like the scroller: a press that starts on the strip is ours until it ends
                 let zone = strip.expand2(vec2(26.0, 0.0));
-                let (pd, origin, latest) = ui.ctx().input(|i| (i.pointer.primary_down(), i.pointer.press_origin(), i.pointer.latest_pos()));
+                let (pd, origin, latest) = ui.ctx().input(|i| (i.pointer.primary_down() && i.pointer.latest_pos().is_some(), i.pointer.press_origin(), i.pointer.latest_pos()));
                 let down = pd && origin.is_some_and(|o| zone.contains(o)) && t > 0.9;
                 let fy = latest.map(|p| p.y).unwrap_or(strip.center().y);
                 let mut st = std::mem::take(&mut self.scrub);

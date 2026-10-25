@@ -152,7 +152,7 @@ impl Scroller {
     /// Drives itself from the pointer: press inside `area`, drag, let go. Returns true while it needs more frames.
     pub fn update(&mut self, ctx: &Context, area: Rect, max: f32, enabled: bool, dt: f32) -> bool {
         self.view = area.height();
-        let (pressed, down, pos, time) = ctx.input(|i| (i.pointer.primary_pressed(), i.pointer.primary_down(), i.pointer.latest_pos(), i.time));
+        let (pressed, down, pos, time) = ctx.input(|i| (i.pointer.primary_pressed(), i.pointer.primary_down() && i.pointer.latest_pos().is_some(), i.pointer.latest_pos(), i.time));
         if pressed && enabled && pos.is_some_and(|p| area.contains(p) && !self.exclude.is_some_and(|e| e.contains(p))) {
             self.holding = true;
             self.glide = None;

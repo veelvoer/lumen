@@ -1042,6 +1042,12 @@ impl Lumen {
 
     fn touch(&mut self, ctx: &Context, geo: &Geo) {
         let (pressed, down, pos, time, delta, vel) = ctx.input(|i| (i.pointer.primary_pressed(), i.pointer.primary_down(), i.pointer.latest_pos(), i.time, i.pointer.delta(), i.pointer.velocity()));
+        // A cancelled touch (the system took over, e.g. the swipe up that closes an app) arrives as "pointer gone"
+        // without a release. Treat it as a lift that must not count as a tap, or the finger looks held forever
+        // and a long press or a drag starts by itself.
+        let lost = down && pos.is_none();
+        let cancelled = lost && !matches!(self.touch, Touch::Idle | Touch::Spent);
+        let down = down && !lost;
         let slop = 10.0;
         let long_press = 0.40;
         let w = geo.screen.width();
@@ -1066,7 +1072,11 @@ impl Lumen {
         }
         match self.touch.clone() {
             Touch::Idle => {
-                if pressed && !self.overlay_blocks_home() {
+                // the bottom strip belongs to the system's gestures (home, recents)
+                let in_system_strip = pos.is_some_and(|p| p.y > geo.screen.bottom() - 20.0);
+                if pressed && in_system_strip {
+                    self.touch = Touch::Spent;
+                } else if pressed && !self.overlay_blocks_home() {
                     if let Some(pos) = pos {
                         if let Some((_, hs)) = self.resize_handles(geo) {
                             if let Some(e) = hs.iter().position(|c| (pos - *c).length() < 34.0) {
@@ -1092,7 +1102,9 @@ impl Lumen {
                 let pos = pos.unwrap_or(start);
                 let moved = (pos - start).length();
                 if !down {
-                    self.tap(ctx, geo, start, hit, time);
+                    if !cancelled {
+                        self.tap(ctx, geo, start, hit, time);
+                    }
                     self.touch = Touch::Idle;
                 } else if moved > slop {
                     let d = pos - start;

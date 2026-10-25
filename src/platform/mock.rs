@@ -312,3 +312,7 @@ pub fn wallpaper_live() -> bool {
 pub fn exit_info() -> String {
     String::new()
 }
+
+pub fn wallpaper_colors() -> Vec<[u8; 3]> {
+    vec![[150, 60, 150], [250, 140, 60], [40, 20, 70]]
+}

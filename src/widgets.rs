@@ -281,31 +281,45 @@ pub fn liquid_glass(p: &Painter, rect: Rect, radius: f32, pal: &Palette, name: &
         p.rect_stroke(rect, cr(r), Stroke::new(0.8, Color32::from_white_alpha(38)), StrokeKind::Inside);
         return;
     }
-    // no wallpaper to blur: a clean milky pane, lighter at the top so it still reads as glass
-    p.rect_filled(rect, cr(r), Color32::from_white_alpha(if pal.light { 130 } else { 62 }));
-    if crate::perf::light() {
-        p.rect_stroke(rect, cr(r), Stroke::new(1.0, Color32::from_white_alpha(70)), StrokeKind::Inside);
-        return;
+    frost(p, rect, r, pal);
+}
+
+/// Frosted glass without reading the wallpaper: a soft shadow, a veil in the wallpaper's own hue that is lighter at the
+/// top, and a fine light rim. No lines, no hard edges.
+pub fn frost(p: &Painter, rect: Rect, r: f32, pal: &Palette) {
+    let r = r.min(rect.height() / 2.0).min(rect.width() / 2.0);
+    let light = crate::perf::light();
+    if !light {
+        p.rect_filled(rect.translate(vec2(0.0, 3.0)).expand(1.0), cr(r + 1.0), Color32::from_black_alpha(if pal.light { 16 } else { 30 }));
     }
-    // glow on the upper half
-    let top = Rect::from_min_max(rect.min, pos2(rect.right(), rect.center().y));
-    p.rect_filled(top, CornerRadius { nw: r as u8, ne: r as u8, sw: 0, se: 0 }, Color32::from_white_alpha(22));
-    // soft dark rim at the bottom edge
-    let bot = Rect::from_min_max(pos2(rect.left(), rect.bottom() - r.min(14.0)), rect.max);
-    p.rect_filled(bot, CornerRadius { nw: 0, ne: 0, sw: r as u8, se: r as u8 }, Color32::from_black_alpha(14));
-    // light rim: bright on top, dimmer lower down
-    p.rect_stroke(rect, cr(r), Stroke::new(1.0, Color32::from_white_alpha(72)), StrokeKind::Inside);
-    p.rect_stroke(rect.shrink(1.0), cr((r - 1.0).max(0.0)), Stroke::new(1.0, Color32::from_white_alpha(18)), StrokeKind::Inside);
-    let n = 14;
-    for i in 0..n {
+    let v = crate::glass::veil(pal.light);
+    let (base, top) = if pal.light { (150.0, 60.0) } else { (92.0, 52.0) };
+    // slices from top to bottom, each a trapezoid with its own color: a smooth vertical gradient
+    let n = if light { 1 } else { 14 };
+    let inset = |y: f32| -> f32 {
+        let (dt, db) = (y - rect.top(), rect.bottom() - y);
+        let d = dt.min(db);
+        if d >= r { 0.0 } else { r - (r * r - (r - d) * (r - d)).max(0.0).sqrt() }
+    };
+    let mut mesh = Mesh::default();
+    let color = |t: f32| Color32::from_rgba_unmultiplied(v[0] as u8, v[1] as u8, v[2] as u8, (base + top * (1.0 - t).powf(1.6)) as u8);
+    for i in 0..=n {
         let t = i as f32 / n as f32;
-        let y = rect.top() + 0.5 + t * r * 0.9;
-        let inset = r - (r * r - (r - (y - rect.top())).max(0.0).powi(2)).max(0.0).sqrt();
-        let a = ((1.0 - t) * 150.0) as u8;
-        p.line_segment([pos2(rect.left() + inset + 1.0, y), pos2(rect.right() - inset - 1.0, y)], Stroke::new(1.0, Color32::from_white_alpha(a / 6)));
+        let y = rect.top() + t * rect.height();
+        let ins = inset(y) + 0.5;
+        let c = color(t);
+        mesh.colored_vertex(pos2(rect.left() + ins, y), c);
+        mesh.colored_vertex(pos2(rect.right() - ins, y), c);
+        if i > 0 {
+            let k = (i * 2) as u32;
+            mesh.add_triangle(k - 2, k - 1, k);
+            mesh.add_triangle(k - 1, k + 1, k);
+        }
     }
-    // the specular line on the very top edge
-    p.line_segment([pos2(rect.left() + r * 0.8, rect.top() + 0.8), pos2(rect.right() - r * 0.8, rect.top() + 0.8)], Stroke::new(1.4, Color32::from_white_alpha(120)));
+    p.add(PShape::mesh(mesh));
+    // the rounded ends of the slices are straight: round them with the shape itself
+    p.rect_stroke(rect, cr(r), Stroke::new(1.2, Color32::from_white_alpha(if pal.light { 150 } else { 78 })), StrokeKind::Inside);
+    p.rect_stroke(rect.shrink(1.2), cr((r - 1.2).max(0.0)), Stroke::new(1.0, Color32::from_white_alpha(if pal.light { 40 } else { 16 })), StrokeKind::Inside);
 }
 
 pub fn search_pill(p: &Painter, rect: Rect, text: &str, cfg: &Config, pal: &Palette, trailing: bool) {

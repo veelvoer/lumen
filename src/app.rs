@@ -167,6 +167,7 @@ pub struct Lumen {
     last_scan: std::time::Instant,
     /// 1 right after coming back from an app, then eases to 0: the home screen settles in
     pub resume_t: Spring,
+    pub jig_t: f32,
     pub edit_t: Spring,
     last_launch: f64,
     pub system_dark: bool,
@@ -277,6 +278,7 @@ impl Lumen {
             scan_pending: false,
             last_scan: std::time::Instant::now(),
             resume_t: Spring::at(0.0),
+            jig_t: 0.0,
             edit_t: Spring::at(0.0),
             last_launch: -10.0,
             system_dark,
@@ -516,6 +518,7 @@ impl Lumen {
         if snap.battery.is_some() {
             self.wallpaper_access = snap.wallpaper_access;
             self.wallpaper_live = snap.wallpaper_live;
+            crate::glass::set_colors(&snap.wallpaper_colors);
         }
         if snap.battery.is_some() && self.cfg.preset == Preset::Ios && self.cfg.real_glass && !self.wallpaper_access && !self.wallpaper_live && !self.cfg.glass_hinted && self.whats_new.is_none() {
             self.cfg.glass_hinted = true;

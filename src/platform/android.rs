@@ -1037,6 +1037,20 @@ pub fn exit_info() -> String {
     .unwrap_or_default()
 }
 
+/// The wallpaper's three main colors (no permission needed), as RGB.
+pub fn wallpaper_colors() -> Vec<[u8; 3]> {
+    with(|env, act| {
+        let cls = glue(env, act, "dev.voer.lumen.Glue")?;
+        let s = env.call_static_method(&cls, "wallpaperColors", "(Landroid/app/Activity;)Ljava/lang/String;", &[JValue::Object(act)])?.l()?;
+        Ok(jstr(env, &s))
+    })
+    .unwrap_or_default()
+    .split(',')
+    .filter_map(|v| v.trim().parse::<i32>().ok())
+    .map(|c| [(c >> 16) as u8, (c >> 8) as u8, c as u8])
+    .collect()
+}
+
 pub fn wallpaper_live() -> bool {
     with(|env, act| {
         let cls = glue(env, act, "dev.voer.lumen.Glue")?;

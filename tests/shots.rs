@@ -319,3 +319,15 @@ fn whats_new() {
     settle(&mut h);
     shot(&mut h, "whats-new");
 }
+
+#[test]
+fn frost_fallback() {
+    let mut h = make(Preset::Ios, |c| c.real_glass = false);
+    settle(&mut h);
+    shot(&mut h, "frost-home");
+    lumen(&mut h).edit = true;
+    for _ in 0..30 {
+        h.step();
+    }
+    shot(&mut h, "frost-edit");
+}

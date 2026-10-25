@@ -190,6 +190,19 @@ public final class Glue {
 
     public static String wallpaperError() { return wallpaperError; }
 
+    /** The wallpaper's main colors ("argb,argb,argb"), which Android hands out without any permission. */
+    public static String wallpaperColors(Activity a) {
+        if (android.os.Build.VERSION.SDK_INT < 27) return "";
+        try {
+            android.app.WallpaperColors c = WallpaperManager.getInstance(a).getWallpaperColors(WallpaperManager.FLAG_SYSTEM);
+            if (c == null) return "";
+            int p = c.getPrimaryColor().toArgb();
+            int s = c.getSecondaryColor() != null ? c.getSecondaryColor().toArgb() : p;
+            int t = c.getTertiaryColor() != null ? c.getTertiaryColor().toArgb() : s;
+            return p + "," + s + "," + t;
+        } catch (Throwable t) { return ""; }
+    }
+
     /** Why Android ended Lumen's last few processes (crash, native crash, ANR, killed...), newest first. */
     public static String exitInfo(Activity a) {
         if (android.os.Build.VERSION.SDK_INT < 30) return "";

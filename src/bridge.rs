@@ -30,6 +30,7 @@ pub struct Snapshot {
     pub default_home: bool,
     pub wallpaper_access: bool,
     pub wallpaper_live: bool,
+    pub wallpaper_colors: Vec<[u8; 3]>,
     pub home_pressed: bool,
     pub settings_requested: bool,
 }
@@ -71,6 +72,7 @@ fn poll(s: &mut Snapshot, slow: bool) {
         s.default_home = platform::is_default_home();
         s.wallpaper_access = platform::wallpaper_access();
         s.wallpaper_live = platform::wallpaper_live();
+        s.wallpaper_colors = platform::wallpaper_colors();
     }
 }
 

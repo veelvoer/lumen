@@ -145,7 +145,25 @@ struct Baked {
 }
 
 thread_local! {
+    static TINT: std::cell::Cell<[f32; 3]> = const { std::cell::Cell::new([190.0, 190.0, 210.0]) };
     static READY: RefCell<HashMap<&'static str, (TextureId, Rect)>> = RefCell::new(HashMap::new());
+}
+
+/// The wallpaper's main colors (from Android, no permission needed), so frosted panels pick up its hue.
+pub fn set_colors(cs: &[[u8; 3]]) {
+    if cs.is_empty() {
+        return;
+    }
+    let (a, b) = (cs[0], cs.get(1).copied().unwrap_or(cs[0]));
+    let mix = |i: usize| a[i] as f32 * 0.65 + b[i] as f32 * 0.35;
+    TINT.with(|t| t.set([mix(0), mix(1), mix(2)]));
+}
+
+/// The veil color of a frosted panel: the wallpaper's hue, pulled toward white.
+pub fn veil(light: bool) -> [f32; 3] {
+    let t = TINT.with(|t| t.get());
+    let w = if light { 0.72 } else { 0.55 };
+    [t[0] + (255.0 - t[0]) * w, t[1] + (255.0 - t[1]) * w, t[2] + (255.0 - t[2]) * w]
 }
 
 /// The baked texture for a named panel, if there is one (the painting code asks for it by name).

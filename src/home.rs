@@ -358,7 +358,11 @@ impl Lumen {
         let w = screen.width();
         let centre = screen.center().to_vec2();
         let page = self.page;
-        let t_now = ctx.input(|i| i.time) as f32;
+        if self.edit || self.edit_t.x > 0.001 {
+            // the sway runs on its own clock that advances by the steady frame time, so uneven frames do not show
+            self.jig_t = (self.jig_t + dt).rem_euclid(600.0);
+        }
+        let t_now = self.jig_t;
         let dragging_key = if let Touch::Drag(d) = &self.touch { Some(d.item.key()) } else { None };
         let edit = self.edit;
         let edit_amp = self.edit_t.x.clamp(0.0, 1.0);
@@ -700,10 +704,14 @@ impl Lumen {
             p.rect_filled(screen, 0, Color32::from_black_alpha((t.clamp(0.0, 1.0) * if ios { 90.0 } else { 130.0 }) as u8));
         });
         layer(ctx, "popup", 0, screen, xf, alpha, |p| {
-            let panel_fill = if ios { Color32::from_rgba_unmultiplied(70, 70, 80, 215) } else { pal.sheet };
+            let panel_fill = pal.sheet;
             let target_r = if ios { 34.0 } else { 36.0 };
             let r_now = (icon_r + (target_r - icon_r) * t.clamp(0.0, 1.0)) / s.max(0.05);
-            p.rect_filled(panel, cr(r_now), panel_fill);
+            if ios {
+                widgets::frost(p, panel, r_now, &pal);
+            } else {
+                p.rect_filled(panel, cr(r_now), panel_fill);
+            }
             p.text(title.center_top() + vec2(0.0, 12.0), Align2::CENTER_TOP, &name, fonts::body(&cfg, 20.0, true), tcol);
             for (pkg, cell) in pkgs.iter().zip(cells.iter()) {
                 let Some(&ai) = self.by_pkg.get(pkg) else { continue };
@@ -1742,7 +1750,11 @@ fn paint_library<'a>(
         if rect.bottom() < geo.top || rect.top() > screen.bottom() {
             continue;
         }
-        p.rect_filled(*rect, cr(24.0), pal.folder_bg);
+        if cfg.preset == Preset::Ios {
+            widgets::frost(&p, *rect, 24.0, pal);
+        } else {
+            p.rect_filled(*rect, cr(24.0), pal.folder_bg);
+        }
         for s in 0..4usize {
             let Some(pkg) = pkgs.get(s) else { break };
             if s == 3 && pkgs.len() > 4 {
@@ -1794,7 +1806,6 @@ fn jiggle(t: f32, key: &str) -> f32 {
     // this rate is sampled 12+ times a cycle even at 60 fps, so it stays fluid; t is wrapped to keep f32 exact.
     let phase = key.bytes().fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(b as u32)) as f32 * 0.37;
     let f = 1.0 + (phase.sin() * 0.06);
-    let t = t.rem_euclid(1000.0);
     (t * 31.0 * f + phase).sin() * 0.034
 }
 

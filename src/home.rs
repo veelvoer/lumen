@@ -90,7 +90,7 @@ impl Lumen {
         if c.search == Search::Bottom && matches!(c.preset, Preset::Pixel | Preset::Custom) {
             // Pixel: the search pill sits under the dock
             search = Some(Rect::from_min_max(pos2(left + 4.0, y - 56.0), pos2(right - 4.0, y)));
-            y -= 56.0 + 10.0;
+            y -= 56.0 + 6.0;
         }
         let dock = Rect::from_min_max(pos2(left, y - dock_h), pos2(right, y));
         y = dock.top();
@@ -108,7 +108,14 @@ impl Lumen {
             top += 62.0;
         }
         let grid = Rect::from_min_max(pos2(gl, top), pos2(gr, (y - 4.0).max(top + 100.0)));
-        let cell = vec2(grid.width() / c.cols as f32, grid.height() / c.rows as f32);
+        let mut cell = vec2(grid.width() / c.cols as f32, grid.height() / c.rows as f32);
+        let mut grid = grid;
+        if c.preset == Preset::Pixel {
+            // Pixel Launcher: rows are about 104 dp apart and the grid starts under the status bar
+            let pitch = cell.y.min(104.0);
+            cell.y = pitch;
+            grid = Rect::from_min_size(grid.min, vec2(grid.width(), pitch * c.rows as f32));
+        }
         let dock_slot_w = (dock.width() / c.dock_slots.max(1) as f32).min(110.0);
         let _ = icon;
         Geo { screen, top: screen.top() + it, grid, cell, dock, search, dots_y, dock_slot_w }

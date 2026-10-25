@@ -481,8 +481,8 @@ impl Config {
                 self.shape = Shape::Circle;
                 self.icon_size = 56.0;
                 self.cols = 5;
-                self.rows = 6;
-                self.dock_slots = 4;
+                self.rows = 5;
+                self.dock_slots = 5;
                 self.labels = true;
                 self.themed_icons = false;
                 self.search = Search::Bottom;
@@ -594,6 +594,13 @@ impl Config {
         if c.migrated < 1 {
             c.migrated = 1;
             c.drawer_scrubber = true;
+        }
+        if c.migrated < 3 {
+            c.migrated = 3;
+            if c.preset == Preset::Pixel {
+                c.rows = 5;
+                c.dock_slots = 5;
+            }
         }
         if c.migrated < 2 {
             c.migrated = 2;

@@ -331,3 +331,53 @@ fn frost_fallback() {
     }
     shot(&mut h, "frost-edit");
 }
+
+/// Film strip: renders one frame every `gap_ms` after `go` has been triggered and tiles them (a third of the size)
+/// into one sheet, so a transition can be checked frame by frame for pops, overlaps and double images.
+fn strip(h: &mut Harness<'_, Option<Lumen>>, name: &str, frames: usize, gap_ms: u64) {
+    let cols = 8usize;
+    let first = h.render().expect("render");
+    let (tw, th) = (first.width() as usize / 3, first.height() as usize / 3);
+    let rows = frames.div_ceil(cols);
+    let mut sheet = image::RgbaImage::new((tw * cols) as u32, (th * rows) as u32);
+    for i in 0..frames {
+        h.step();
+        std::thread::sleep(std::time::Duration::from_millis(gap_ms));
+        let img = h.render().expect("render");
+        let (ox, oy) = ((i % cols) * tw, (i / cols) * th);
+        for y in 0..th {
+            for x in 0..tw {
+                let p = img.get_pixel((x * 3) as u32, (y * 3) as u32);
+                sheet.put_pixel((ox + x) as u32, (oy + y) as u32, *p);
+            }
+        }
+    }
+    std::fs::create_dir_all(OUT).unwrap();
+    sheet.save(format!("{OUT}/strip-{name}.png")).unwrap();
+}
+
+#[test]
+fn filmstrips() {
+    // drawer-ish: iOS swipe-down search
+    let mut h = make(Preset::Ios, |_| {});
+    lumen(&mut h).search_open = true;
+    strip(&mut h, "ios-search-open", 16, 22);
+    lumen(&mut h).search_open = false;
+    strip(&mut h, "ios-search-close", 16, 22);
+    // edit mode in and out
+    let mut h = make(Preset::Ios, |_| {});
+    lumen(&mut h).edit = true;
+    strip(&mut h, "ios-edit-in", 16, 22);
+    lumen(&mut h).edit = false;
+    strip(&mut h, "ios-edit-out", 16, 22);
+    // page change
+    let mut h = make(Preset::Ios, |_| {});
+    lumen(&mut h).page_target = 1.0;
+    strip(&mut h, "ios-page", 16, 22);
+    // pixel drawer
+    let mut h = make(Preset::Pixel, |_| {});
+    lumen(&mut h).drawer_open = true;
+    strip(&mut h, "pixel-drawer-open", 16, 22);
+    lumen(&mut h).drawer_open = false;
+    strip(&mut h, "pixel-drawer-close", 16, 22);
+}

@@ -178,6 +178,10 @@ impl Lumen {
         }
         self.track_items(&geo);
         self.bake_glass(ctx, &geo);
+        if !self.search_open && self.search_t.x < 0.01 {
+            // wherever search is opened from, it grows out of the capsule and folds back into it
+            self.search_from = geo.search;
+        }
         // the root ui must be claimed, everything is painted in layers
         egui::CentralPanel::default().frame(Frame::NONE).show(root, |_| {});
         let covered = self.drawer >= 0.995 && self.screen == Screen::Home;
@@ -346,7 +350,7 @@ impl Lumen {
     }
 
     fn overlay_blocks_home(&self) -> bool {
-        self.drawer > 0.02 || self.menu.is_some() || self.dialog.is_some() || self.widget_picker || self.search_open
+        self.drawer > 0.02 || self.menu.is_some() || self.dialog.is_some() || self.widget_picker || self.search_open || self.search_t.x > 0.02 || self.whats_new.is_some()
     }
 
     // ───────────────────────────── painting ─────────────────────────────
@@ -438,8 +442,8 @@ impl Lumen {
                     let sc = scale_sp.get(&key).map(|s| s.x).unwrap_or(1.0);
                     let jig = jiggle(t_now, &key) * edit_amp;
                     paint_item(p, &pl.item, cell, &icon_rect, &cfg, &pal, &mut icons, &find, &badges, &live, sc, jig, 1.0, true, sc > 1.05, &mut labels);
-                    if edit && dragging_key.as_deref() != Some(key.as_str()) {
-                        paint_remove_badge(p, &pl.item, cell, &icon_rect, &cfg, &pal);
+                    if edit_amp > 0.01 && dragging_key.as_deref() != Some(key.as_str()) {
+                        paint_remove_badge(p, &pl.item, cell, &icon_rect, &cfg, &pal, edit_amp);
                     }
                 }
                 labels.flush(p, &cfg);
@@ -521,20 +525,24 @@ impl Lumen {
                 let sc = scale_sp.get(&key).map(|s| s.x).unwrap_or(1.0);
                 let jig = jiggle(t_now, &key) * edit_amp;
                 paint_item(p, it, cell, &dock_icon, cfg, pal, &mut icons, &find, &badges, live, sc, jig, 1.0, cfg.dock_labels, sc > 1.05, &mut labels);
-                if edit {
-                    paint_remove_badge(p, it, cell, &dock_icon, cfg, pal);
+                if edit_amp > 0.01 {
+                    paint_remove_badge(p, it, cell, &dock_icon, cfg, pal, edit_amp);
                 }
             }
             labels.flush(p, cfg);
         });
 
         // 4. search pill, page dots, edit chrome
-        layer(ctx, "top", 0, screen, tf(0.0, 1.0), base_alpha, |p| {
+        // the capsule steps aside as the App Library slides in, so it never sits on the cards
+        let to_library = if cfg.app_library { (page - (cfg.pages.len() as f32 - 1.0)).clamp(0.0, 1.0) } else { 0.0 };
+        layer(ctx, "pill", 0, screen, tf(0.0, 1.0), base_alpha * (1.0 - to_library * 1.4).clamp(0.0, 1.0), |p| {
             if let Some(s) = geo.search {
                 if cfg.search != Search::Off {
                     widgets::search_pill(p, s, "Search", cfg, pal, cfg.preset == Preset::Pixel);
                 }
             }
+        });
+        layer(ctx, "top", 0, screen, tf(0.0, 1.0), base_alpha, |p| {
             if cfg.page_dots && count > 1 {
                 paint_dots(p, geo, cfg, pal, count, page);
             }
@@ -550,15 +558,18 @@ impl Lumen {
 
         // 5. things above: popup, edit chrome, the dragged item
         self.paint_folder_popup(ctx, geo);
-        if self.edit {
+        if self.edit || self.edit_t.x > 0.01 {
             let me = &*self;
-            layer(ctx, "chrome", 0, screen, egui::emath::TSTransform::IDENTITY, 1.0, |p| me.paint_edit_chrome(p, geo));
+            let a = me.edit_t.x.clamp(0.0, 1.0);
+            // the buttons slide down from under the status bar as they fade in
+            let tf = egui::emath::TSTransform::from_translation(vec2(0.0, -10.0 * (1.0 - a)));
+            layer(ctx, "chrome", 0, screen, tf, a, |p| me.paint_edit_chrome(p, geo));
         }
         self.paint_resize(ctx, geo);
         self.paint_drag(ctx, geo);
         self.paint_ghosts(ctx, geo);
         // keep the stacking order stable when pages come and go
-        for name in ["dock", "top", "popup", "chrome", "resize", "drag", "ghost"] {
+        for name in ["dock", "pill", "top", "popup", "chrome", "resize", "drag", "ghost"] {
             ctx.move_to_top(egui::LayerId::new(egui::Order::Middle, egui::Id::new(("lumen-layer", name, 0usize))));
         }
         if moving || self.edit {
@@ -1718,14 +1729,16 @@ fn paint_item<'a>(
     }
 }
 
-fn paint_remove_badge(p: &Painter, item: &Item, cell: Rect, icon_rect: &dyn Fn(Rect) -> Rect, _cfg: &crate::config::Config, _pal: &crate::theme::Palette) {
+fn paint_remove_badge(p: &Painter, item: &Item, cell: Rect, icon_rect: &dyn Fn(Rect) -> Rect, _cfg: &crate::config::Config, _pal: &crate::theme::Palette, amp: f32) {
     let ir = match item {
         Item::Widget { .. } | Item::AppWidget { .. } => cell.shrink(6.0),
         _ => icon_rect(cell),
     };
     let c = ir.left_top() + vec2(2.0, 2.0);
-    p.circle_filled(c, 11.0, Color32::from_gray(90));
-    p.rect_filled(Rect::from_center_size(c, vec2(11.0, 2.4)), cr(1.2), Color32::WHITE);
+    // the badges pop in with the edit spring (a little overshoot) and fade with it
+    let (k, a) = (amp.clamp(0.0, 1.12), amp.clamp(0.0, 1.0));
+    p.circle_filled(c, 11.0 * k, Color32::from_gray(90).gamma_multiply(a));
+    p.rect_filled(Rect::from_center_size(c, vec2(11.0, 2.4) * k), cr(1.2), Color32::WHITE.gamma_multiply(a));
 }
 
 #[allow(dead_code)]

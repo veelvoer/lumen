@@ -55,12 +55,19 @@ impl Lumen {
                         v.push((ph::ARROW_LINE_DOWN, "Add to dock", Act::AddDock(pkg.clone()), false));
                     }
                 }
-                v.push((ph::INFO, "App info", Act::AppInfo(pkg.clone()), false));
+                if pkg == platform::PACKAGE {
+                    v.push((ph::GEAR, "Lumen settings", Act::Settings, false));
+                } else {
+                    v.push((ph::INFO, "App info", Act::AppInfo(pkg.clone()), false));
+                }
                 v.push((ph::PENCIL_SIMPLE, "Rename", Act::Rename(pkg.clone()), false));
-                if !*on_home {
+                let own = pkg == platform::PACKAGE;
+                if !*on_home && !own {
                     v.push((ph::EYE_SLASH, "Hide", Act::Hide(pkg.clone()), false));
                 }
-                v.push((ph::TRASH, "Uninstall", Act::Uninstall(pkg.clone()), true));
+                if !own {
+                    v.push((ph::TRASH, "Uninstall", Act::Uninstall(pkg.clone()), true));
+                }
                 v
             }
             Target::Folder(id) => {
@@ -101,7 +108,13 @@ impl Lumen {
         let y = if below { a.bottom() + 14.0 } else { (a.top() - 14.0 - height).max(screen.top() + 40.0) };
         let x = (a.center().x - width / 2.0).clamp(12.0, screen.right() - width - 12.0);
         let radius = if ios { 16.0 } else if nothing { 14.0 } else { 26.0 };
+        // grows out of the icon it belongs to
+        let mt = self.menu_t.x.clamp(0.0, 1.15);
+        let sc = 0.7 + 0.3 * mt;
+        let pivot = pos2(a.center().x.clamp(x, x + width), if below { y } else { y + height });
+        ctx.set_transform_layer(egui::LayerId::new(Order::Tooltip, Id::new("menu")), egui::emath::TSTransform::new(pivot.to_vec2() * (1.0 - sc), sc));
         Area::new(Id::new("menu")).order(Order::Tooltip).fixed_pos(pos2(x, y)).show(ctx, |ui| {
+            ui.set_opacity(mt.min(1.0));
             Frame::NONE
                 .fill(pal.menu_bg)
                 .corner_radius(cr(radius))

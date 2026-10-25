@@ -18,8 +18,9 @@ const DAYS_FULL: [&str; 7] = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thurs
 const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 impl ClockInfo {
-    pub fn now() -> ClockInfo {
-        let ms = platform::local_millis();
+    /// `tz_offset_ms` and `h24` come from the phone (polled in the background).
+    pub fn now(tz_offset_ms: i64, h24: bool) -> ClockInfo {
+        let ms = platform::now_ms() + tz_offset_ms;
         let days = ms.div_euclid(86_400_000);
         let secs = ms.rem_euclid(86_400_000) / 1000;
         // days since 1970 to a calendar date (Howard Hinnant's algorithm)
@@ -36,7 +37,7 @@ impl ClockInfo {
             day: (doy - (153 * mp + 2) / 5 + 1) as u32,
             month: (if mp < 10 { mp + 3 } else { mp - 9 }) as u32,
             weekday: (days + 4).rem_euclid(7) as usize,
-            h24: platform::is_24h(),
+            h24,
         }
     }
 

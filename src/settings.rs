@@ -18,6 +18,9 @@ pub enum SettingsPage {
     Dock,
     Drawer,
     Gestures,
+    Motion,
+    Layout,
+    Behavior,
     Badges,
     Backup,
     Updates,
@@ -33,6 +36,9 @@ impl SettingsPage {
             SettingsPage::Dock => "Dock",
             SettingsPage::Drawer => "App drawer",
             SettingsPage::Gestures => "Gestures",
+            SettingsPage::Motion => "Animations and feel",
+            SettingsPage::Layout => "Layout and sizes",
+            SettingsPage::Behavior => "Behavior",
             SettingsPage::Badges => "Notification badges",
             SettingsPage::Backup => "Backup and reset",
             SettingsPage::Updates => "Updates",
@@ -215,45 +221,82 @@ fn swatches(ui: &mut Ui, c: &mut Ctl, cur: &mut [u8; 3]) {
 // ───────────────────────────── entry ─────────────────────────────
 
 pub fn show(l: &mut Lumen, root: &mut Ui) {
+    let _ = root;
     let ctx = root.ctx().clone();
+    let screen = ctx.content_rect();
     let k = ctx.pixels_per_point();
     let (top, bottom) = (l.insets.top / k, l.insets.bottom / k);
     let mut c = Ctl { ctx: ctx.clone(), pal: l.pal, fcfg: l.cfg.clone(), changed: false, preset: None, toast: None };
-    let page = l.settings_stack.last().copied();
     let before = (l.cfg.cols, l.cfg.rows, l.cfg.dock_slots);
 
-    ctx.layer_painter(egui::LayerId::background()).rect_filled(ctx.content_rect(), 0, c.pal.sheet);
-    egui::CentralPanel::default().frame(Frame::NONE.fill(c.pal.sheet)).show(root, |ui| {
-        ui.add_space(top + 4.0);
-        // app bar
-        let (bar, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 56.0), Sense::click());
-        let p = ui.painter();
-        widgets::glyph_at(p, bar.left_center() + vec2(30.0, 0.0), Align2::CENTER_CENTER, ph::ARROW_LEFT, 24.0, c.pal.text);
-        p.text(bar.left_center() + vec2(66.0, 0.0), Align2::LEFT_CENTER, page.map(|p| p.title()).unwrap_or("Lumen"), c.body(22.0, true), c.pal.text);
-        if resp.clicked() && ui.input(|i| i.pointer.interact_pos().is_some_and(|p| p.x < 120.0)) {
-            if l.settings_stack.pop().is_none() {
-                l.screen = Screen::Home;
-            }
-        }
-        egui::ScrollArea::vertical().auto_shrink(false).scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden).show(ui, |ui| {
-            Frame::NONE.inner_margin(egui::Margin::symmetric(18, 0)).show(ui, |ui| {
-                match page {
-                    None => main_page(ui, l, &mut c),
-                    Some(SettingsPage::Look) => look_page(ui, l, &mut c),
-                    Some(SettingsPage::Home) => home_page(ui, l, &mut c),
-                    Some(SettingsPage::Icons) => icons_page(ui, l, &mut c),
-                    Some(SettingsPage::Dock) => dock_page(ui, l, &mut c),
-                    Some(SettingsPage::Drawer) => drawer_page(ui, l, &mut c),
-                    Some(SettingsPage::Gestures) => gestures_page(ui, l, &mut c),
-                    Some(SettingsPage::Badges) => badges_page(ui, l, &mut c),
-                    Some(SettingsPage::Backup) => backup_page(ui, l, &mut c),
-                    Some(SettingsPage::Updates) => updates_page(ui, l, &mut c),
-                    Some(SettingsPage::About) => about_page(ui, l, &mut c),
+    // how the whole screen arrives: iOS slides in from the right, Pixel rises and fades, Nothing just fades
+    let t = l.screen_t.x;
+    let tc = t.clamp(0.0, 1.0);
+    let (off, alpha) = match l.cfg.preset {
+        Preset::Ios => (vec2((1.0 - t) * screen.width(), 0.0), 1.0),
+        Preset::Pixel | Preset::Custom => (vec2(0.0, (1.0 - tc) * 56.0), tc),
+        Preset::Nothing => (vec2(0.0, 0.0), tc),
+    };
+
+    // sub pages push and pop with the same spring
+    l.depth.target = l.settings_stack.len() as f32;
+    let depth = l.depth.x.max(0.0);
+    if !l.depth.moving() && l.settings_view.len() != l.settings_stack.len() {
+        l.settings_view = l.settings_stack.clone();
+    }
+    let view = if l.settings_view.len() > l.settings_stack.len() { l.settings_view.clone() } else { l.settings_stack.clone() };
+    let (k0, k1) = (depth.floor() as usize, depth.ceil() as usize);
+    let mut shown = vec![k0];
+    if k1 != k0 {
+        shown.push(k1);
+    }
+    for pk in shown {
+        let page = if pk == 0 { None } else { view.get(pk - 1).copied() };
+        let dx = if (pk as f32) < depth { (pk as f32 - depth) * screen.width() * 0.3 } else { (pk as f32 - depth) * screen.width() };
+        let a = alpha * if (pk as f32) < depth { 1.0 - 0.4 * (depth - pk as f32).min(1.0) } else { 1.0 };
+        let origin = screen.min + off + vec2(dx, 0.0);
+        let rect = Rect::from_min_size(origin, screen.size());
+        let id = egui::Id::new(("lumen-settings", pk));
+        egui::Area::new(id).order(egui::Order::Foreground).fixed_pos(origin).constrain(false).show(&ctx, |ui| {
+            ui.set_clip_rect(screen);
+            ui.set_opacity(a);
+            ui.painter().rect_filled(rect, 0, c.pal.sheet);
+            ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+                ui.add_space(top + 4.0);
+                // app bar
+                let (bar, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 56.0), Sense::click());
+                let p = ui.painter();
+                widgets::glyph_at(p, bar.left_center() + vec2(30.0, 0.0), Align2::CENTER_CENTER, ph::ARROW_LEFT, 24.0, c.pal.text);
+                p.text(bar.left_center() + vec2(66.0, 0.0), Align2::LEFT_CENTER, page.map(|p| p.title()).unwrap_or("Lumen"), c.body(22.0, true), c.pal.text);
+                if resp.clicked() && ui.input(|i| i.pointer.interact_pos().is_some_and(|p| p.x - rect.left() < 120.0)) {
+                    if l.settings_stack.pop().is_none() {
+                        l.screen = Screen::Home;
+                    }
                 }
-                ui.add_space(bottom + 48.0);
+                egui::ScrollArea::vertical().id_salt(("settings-scroll", pk)).auto_shrink(false).scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden).show(ui, |ui| {
+                    Frame::NONE.inner_margin(egui::Margin::symmetric(18, 0)).show(ui, |ui| {
+                        match page {
+                            None => main_page(ui, l, &mut c),
+                            Some(SettingsPage::Look) => look_page(ui, l, &mut c),
+                            Some(SettingsPage::Home) => home_page(ui, l, &mut c),
+                            Some(SettingsPage::Icons) => icons_page(ui, l, &mut c),
+                            Some(SettingsPage::Dock) => dock_page(ui, l, &mut c),
+                            Some(SettingsPage::Drawer) => drawer_page(ui, l, &mut c),
+                            Some(SettingsPage::Gestures) => gestures_page(ui, l, &mut c),
+                            Some(SettingsPage::Motion) => motion_page(ui, l, &mut c),
+                            Some(SettingsPage::Layout) => layout_page(ui, l, &mut c),
+                            Some(SettingsPage::Behavior) => behavior_page(ui, l, &mut c),
+                            Some(SettingsPage::Badges) => badges_page(ui, l, &mut c),
+                            Some(SettingsPage::Backup) => backup_page(ui, l, &mut c),
+                            Some(SettingsPage::Updates) => updates_page(ui, l, &mut c),
+                            Some(SettingsPage::About) => about_page(ui, l, &mut c),
+                        }
+                        ui.add_space(bottom + 48.0);
+                    });
+                });
             });
         });
-    });
+    }
 
     if let Some(p) = c.preset {
         l.cfg.apply_preset(p);
@@ -300,7 +343,10 @@ fn main_page(ui: &mut Ui, l: &mut Lumen, c: &mut Ctl) {
         (ph::SQUARES_FOUR, "Icons", "Size, shape, single-color icons", SettingsPage::Icons, false),
         (ph::ARROW_LINE_DOWN, "Dock", "Style and number of slots", SettingsPage::Dock, false),
         (ph::LIST_BULLETS, "App drawer", "Grid or list, suggestions, hidden apps", SettingsPage::Drawer, false),
-        (ph::HAND_SWIPE_RIGHT, "Gestures", "Swipes and double tap", SettingsPage::Gestures, false),
+        (ph::HAND_SWIPE_RIGHT, "Gestures", "Swipes, double tap, pinch, long press", SettingsPage::Gestures, false),
+        (ph::SPARKLE, "Animations and feel", "Spring style, speed, page effects, blur", SettingsPage::Motion, false),
+        (ph::LAYOUT, "Layout and sizes", "Margins, dock, labels, widgets, folders", SettingsPage::Layout, false),
+        (ph::SLIDERS_HORIZONTAL, "Behavior", "New apps, status bar, rotation, clock format", SettingsPage::Behavior, false),
         (ph::BELL, "Notification badges", "Dots or counts on icons", SettingsPage::Badges, false),
         (ph::FLOPPY_DISK, "Backup and reset", "Copy your layout, restore it, start over", SettingsPage::Backup, false),
         (ph::DOWNLOAD_SIMPLE, "Updates", &format!("Lumen {}", l.version), SettingsPage::Updates, st.available.is_some()),
@@ -498,6 +544,14 @@ fn drawer_page(ui: &mut Ui, l: &mut Lumen, c: &mut Ctl) {
         usize_row(ui, c, "Columns", &mut l.cfg.drawer_cols, 3..=6);
     }
     switch_row(ui, c, "Suggested apps", "Your most used apps at the top", &mut l.cfg.suggestions);
+    section(ui, c, "Order");
+    chips(ui, c, &mut l.cfg.drawer_sort, &[(Sort::Alphabetical, "A to Z"), (Sort::MostUsed, "Most used first")]);
+    switch_row(ui, c, "Letter scroller on the side", "", &mut l.cfg.drawer_scrubber);
+    section(ui, c, "Search bar");
+    chips(ui, c, &mut l.cfg.drawer_search, &[(SearchPos::Auto, "Match the style"), (SearchPos::Top, "Top"), (SearchPos::Bottom, "Bottom")]);
+    section(ui, c, "Background");
+    let shown = format!("{}%", (l.cfg.drawer_opacity * 100.0) as i32);
+    slider_row(ui, c, "Opacity", &mut l.cfg.drawer_opacity, 0.5..=1.0, shown);
     section(ui, c, "Hidden apps");
     if l.cfg.hidden.is_empty() {
         note(ui, c, "No hidden apps. Long-press an app in the drawer and choose Hide.");
@@ -526,6 +580,10 @@ fn gestures_page(ui: &mut Ui, l: &mut Lumen, c: &mut Ctl) {
     chips(ui, c, &mut l.cfg.swipe_down, &Action::ALL.iter().filter(|(a, _)| *a != Action::Drawer).copied().collect::<Vec<_>>());
     section(ui, c, "Double tap on empty space");
     chips(ui, c, &mut l.cfg.double_tap, &Action::ALL.iter().filter(|(a, _)| *a != Action::Drawer).copied().collect::<Vec<_>>());
+    section(ui, c, "Long press on empty space");
+    chips(ui, c, &mut l.cfg.long_press_empty, &Action::ALL.iter().filter(|(a, _)| !matches!(a, Action::Drawer | Action::LockScreen)).copied().collect::<Vec<_>>());
+    section(ui, c, "Pinch with two fingers");
+    chips(ui, c, &mut l.cfg.pinch, &Action::ALL.iter().filter(|(a, _)| *a != Action::LockScreen).copied().collect::<Vec<_>>());
     if l.cfg.double_tap == Action::LockScreen || l.cfg.swipe_down == Action::LockScreen {
         ui.add_space(6.0);
         if platform::lock_enabled() {
@@ -637,5 +695,72 @@ fn about_page(ui: &mut Ui, l: &mut Lumen, c: &mut Ctl) {
     ui.add_space(14.0);
     if button(ui, c, ph::ARROW_SQUARE_OUT, "github.com/veelvoer/lumen", false) {
         platform::open_url("https://github.com/veelvoer/lumen");
+    }
+}
+
+fn motion_page(ui: &mut Ui, l: &mut Lumen, c: &mut Ctl) {
+    section(ui, c, "Spring style");
+    note(ui, c, "Auto moves like the preset: bouncy for iOS, smooth for Pixel, quick and mechanical for Nothing.");
+    ui.add_space(6.0);
+    chips(ui, c, &mut l.cfg.anim_style, &[(AnimStyle::Auto, "Match the style"), (AnimStyle::Smooth, "Smooth"), (AnimStyle::Bouncy, "Bouncy"), (AnimStyle::Snappy, "Snappy"), (AnimStyle::Off, "Off")]);
+    let shown = format!("{:.1}x", l.cfg.anim_speed);
+    slider_row(ui, c, "Speed", &mut l.cfg.anim_speed, 0.5..=2.0, shown);
+    section(ui, c, "Pages");
+    chips(ui, c, &mut l.cfg.page_effect, &[(PageEffect::Slide, "Slide"), (PageEffect::Parallax, "Parallax"), (PageEffect::Zoom, "Zoom"), (PageEffect::Fade, "Fade"), (PageEffect::Stack, "Stack")]);
+    section(ui, c, "Opening an app");
+    chips(ui, c, &mut l.cfg.launch_anim, &[(LaunchAnim::Zoom, "Zoom from the icon"), (LaunchAnim::Reveal, "Reveal"), (LaunchAnim::None, "None")]);
+    section(ui, c, "Blur and touch");
+    let has_blur = true;
+    let shown = format!("{}%", (l.cfg.blur * 100.0) as i32);
+    slider_row(ui, c, "Blur behind drawer and folders", &mut l.cfg.blur, 0.0..=1.5, shown);
+    if has_blur {
+        note(ui, c, "Needs Android 12 or newer. Turned off by the phone in battery saver.");
+    }
+    ui.add_space(6.0);
+    switch_row(ui, c, "Vibrate on pick up and drop", "", &mut l.cfg.haptics);
+}
+
+fn layout_page(ui: &mut Ui, l: &mut Lumen, c: &mut Ctl) {
+    section(ui, c, "Home screen margins");
+    let shown = format!("{} dp", l.cfg.margin_side as i32);
+    slider_row(ui, c, "Left and right", &mut l.cfg.margin_side, 0.0..=40.0, shown);
+    let shown = format!("{} dp", l.cfg.margin_top as i32);
+    slider_row(ui, c, "Top", &mut l.cfg.margin_top, 0.0..=80.0, shown);
+    let shown = format!("{} dp", l.cfg.margin_bottom as i32);
+    slider_row(ui, c, "Bottom", &mut l.cfg.margin_bottom, 0.0..=80.0, shown);
+    section(ui, c, "Dock");
+    let shown = format!("{} dp", l.cfg.dock_icon_size as i32);
+    slider_row(ui, c, "Dock icon size", &mut l.cfg.dock_icon_size, 36.0..=76.0, shown);
+    switch_row(ui, c, "Names under dock icons", "", &mut l.cfg.dock_labels);
+    section(ui, c, "Names");
+    let shown = format!("{} sp", l.cfg.label_size as i32);
+    slider_row(ui, c, "Name size", &mut l.cfg.label_size, 9.0..=16.0, shown);
+    switch_row(ui, c, "Shadow behind names", "Helps on bright wallpapers", &mut l.cfg.label_shadow);
+    section(ui, c, "Page indicator");
+    chips(ui, c, &mut l.cfg.dots_style, &[(DotsStyle::Dots, "Dots"), (DotsStyle::Bars, "Bars"), (DotsStyle::Numbers, "Numbers")]);
+    section(ui, c, "Widgets and folders");
+    let shown = format!("{} dp", l.cfg.widget_radius as i32);
+    slider_row(ui, c, "Widget corner radius", &mut l.cfg.widget_radius, 0.0..=44.0, shown);
+    usize_row(ui, c, "Folder columns", &mut l.cfg.folder_cols, 2..=5);
+}
+
+fn behavior_page(ui: &mut Ui, l: &mut Lumen, c: &mut Ctl) {
+    section(ui, c, "Apps");
+    switch_row(ui, c, "Put new apps on the home screen", "Otherwise they wait in the drawer", &mut l.cfg.auto_add);
+    switch_row(ui, c, "Lock the layout", "Stops icons from being moved by accident", &mut l.cfg.lock_layout);
+    section(ui, c, "Screen");
+    switch_row(ui, c, "Hide the status bar", "Swipe from the top edge to see it", &mut l.cfg.hide_status_bar);
+    switch_row(ui, c, "Hide the navigation bar", "Swipe from the bottom edge to see it", &mut l.cfg.hide_nav_bar);
+    switch_row(ui, c, "Allow rotation", "", &mut l.cfg.rotate);
+    section(ui, c, "Clock");
+    chips(ui, c, &mut l.cfg.time_format, &[(TimeFormat::Phone, "Like the phone"), (TimeFormat::H24, "24 hour"), (TimeFormat::H12, "12 hour")]);
+    section(ui, c, "Home app");
+    note(ui, c, if l.default_home { "Lumen is your home app." } else { "Lumen is not your home app yet." });
+    ui.add_space(6.0);
+    if !l.default_home && button(ui, c, ph::HOUSE_SIMPLE, "Make Lumen the home app", true) {
+        platform::pick_default_home();
+    }
+    if button(ui, c, ph::DEVICE_MOBILE, "Phone settings", false) {
+        platform::open_system_settings();
     }
 }

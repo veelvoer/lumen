@@ -55,6 +55,41 @@ public final class Glue {
         return s != null && s.lock();
     }
 
+    /** Frosted wallpaper behind the launcher (Android 12+), in pixels. 0 turns it off. */
+    public static void setBlur(final Activity a, final int px) {
+        a.runOnUiThread(new Runnable() {
+            @Override public void run() {
+                try { a.getWindow().setBackgroundBlurRadius(px); } catch (Throwable ignored) {}
+            }
+        });
+    }
+
+    public static void bars(final Activity a, final boolean hideStatus, final boolean hideNav) {
+        a.runOnUiThread(new Runnable() {
+            @Override public void run() {
+                WindowInsetsController c = a.getWindow().getInsetsController();
+                if (c == null) return;
+                c.setSystemBarsBehavior(WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+                if (hideStatus) c.hide(android.view.WindowInsets.Type.statusBars()); else c.show(android.view.WindowInsets.Type.statusBars());
+                if (hideNav) c.hide(android.view.WindowInsets.Type.navigationBars()); else c.show(android.view.WindowInsets.Type.navigationBars());
+            }
+        });
+    }
+
+    public static void rotate(final Activity a, final boolean free) {
+        a.runOnUiThread(new Runnable() {
+            @Override public void run() {
+                a.setRequestedOrientation(free ? android.content.pm.ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR : android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
+            }
+        });
+    }
+
+    public static boolean takeSettings() {
+        boolean was = LumenActivity.settingsRequested;
+        LumenActivity.settingsRequested = false;
+        return was;
+    }
+
     public static boolean takeHome() {
         boolean was = LumenActivity.homePressed;
         LumenActivity.homePressed = false;

@@ -132,7 +132,7 @@ pub fn fit(p: &Painter, text: &str, font: &egui::FontId, max_w: f32) -> String {
 }
 
 pub fn label(p: &Painter, center_top: Pos2, text: &str, cfg: &Config, color: Color32, max_w: f32, shadow: bool, alpha: f32) {
-    let font = fonts::label(cfg, 12.0 * cfg.font_scale, false);
+    let font = fonts::label(cfg, cfg.label_size * cfg.font_scale, false);
     let s = fit(p, text, &font, max_w);
     if shadow {
         p.text(center_top + vec2(0.0, 0.8), Align2::CENTER_TOP, &s, font.clone(), Color32::from_black_alpha((90.0 * alpha) as u8));

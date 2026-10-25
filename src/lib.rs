@@ -1,6 +1,8 @@
 #![allow(deprecated)]
 
+mod anim;
 mod app;
+mod bridge;
 mod cards;
 mod clock;
 mod config;

@@ -73,10 +73,11 @@ pub enum Action {
     LockScreen,
     Settings,
     Edit,
+    Menu,
 }
 
 impl Action {
-    pub const ALL: [(Action, &'static str); 8] = [
+    pub const ALL: [(Action, &'static str); 9] = [
         (Action::None, "Nothing"),
         (Action::Drawer, "App drawer"),
         (Action::Search, "Search"),
@@ -85,7 +86,60 @@ impl Action {
         (Action::LockScreen, "Lock screen"),
         (Action::Settings, "Lumen settings"),
         (Action::Edit, "Edit home screen"),
+        (Action::Menu, "Home menu"),
     ];
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
+pub enum AnimStyle {
+    Auto,
+    Smooth,
+    Bouncy,
+    Snappy,
+    Off,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PageEffect {
+    Slide,
+    Parallax,
+    Zoom,
+    Fade,
+    Stack,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
+pub enum LaunchAnim {
+    Zoom,
+    Reveal,
+    None,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Sort {
+    Alphabetical,
+    MostUsed,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DotsStyle {
+    Dots,
+    Bars,
+    Numbers,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TimeFormat {
+    Phone,
+    H12,
+    H24,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SearchPos {
+    Auto,
+    Top,
+    Bottom,
 }
 
 /// Things that live on the home screen besides apps.
@@ -226,6 +280,38 @@ pub struct Config {
     pub swipe_down: Action,
     pub double_tap: Action,
     pub lock_layout: bool,
+    // motion
+    pub anim_style: AnimStyle,
+    pub anim_speed: f32,
+    pub page_effect: PageEffect,
+    pub launch_anim: LaunchAnim,
+    pub blur: f32,
+    pub haptics: bool,
+    // layout details
+    pub margin_side: f32,
+    pub margin_top: f32,
+    pub margin_bottom: f32,
+    pub dock_icon_size: f32,
+    pub dock_labels: bool,
+    pub dots_style: DotsStyle,
+    pub widget_radius: f32,
+    pub folder_cols: usize,
+    // text
+    pub label_size: f32,
+    pub label_shadow: bool,
+    pub time_format: TimeFormat,
+    // drawer
+    pub drawer_opacity: f32,
+    pub drawer_sort: Sort,
+    pub drawer_search: SearchPos,
+    pub drawer_scrubber: bool,
+    // behavior
+    pub auto_add: bool,
+    pub long_press_empty: Action,
+    pub pinch: Action,
+    pub hide_status_bar: bool,
+    pub hide_nav_bar: bool,
+    pub rotate: bool,
     pub auto_update: bool,
     pub last_check: u64,
     pub seeded: bool,
@@ -233,6 +319,8 @@ pub struct Config {
     pub pages: Vec<Page>,
     pub dock_items: Vec<Item>,
     pub hidden: Vec<String>,
+    /// every app seen so far, to notice new ones
+    pub known: Vec<String>,
     pub names: HashMap<String, String>,
     pub launches: HashMap<String, u32>,
     pub next_id: u32,
@@ -270,12 +358,40 @@ impl Default for Config {
             swipe_down: Action::Notifications,
             double_tap: Action::None,
             lock_layout: false,
+            anim_style: AnimStyle::Auto,
+            anim_speed: 1.0,
+            page_effect: PageEffect::Slide,
+            launch_anim: LaunchAnim::Zoom,
+            blur: 1.0,
+            haptics: true,
+            margin_side: 0.0,
+            margin_top: 0.0,
+            margin_bottom: 0.0,
+            dock_icon_size: 56.0,
+            dock_labels: false,
+            dots_style: DotsStyle::Dots,
+            widget_radius: 24.0,
+            folder_cols: 3,
+            label_size: 12.0,
+            label_shadow: true,
+            time_format: TimeFormat::Phone,
+            drawer_opacity: 0.95,
+            drawer_sort: Sort::Alphabetical,
+            drawer_search: SearchPos::Auto,
+            drawer_scrubber: false,
+            auto_add: false,
+            long_press_empty: Action::Menu,
+            pinch: Action::None,
+            hide_status_bar: false,
+            hide_nav_bar: false,
+            rotate: false,
             auto_update: true,
             last_check: 0,
             seeded: false,
             pages: vec![Page::default()],
             dock_items: vec![],
             hidden: vec![],
+            known: vec![],
             names: HashMap::new(),
             launches: HashMap::new(),
             next_id: 1,
@@ -313,6 +429,17 @@ impl Config {
                 self.badges = Badges::Dot;
                 self.swipe_down = Action::Notifications;
                 self.swipe_up = Action::Drawer;
+                self.dock_icon_size = 54.0;
+                self.dots_style = DotsStyle::Bars;
+                self.widget_radius = 30.0;
+                self.label_size = 11.0;
+                self.label_shadow = false;
+                self.drawer_opacity = 1.0;
+                self.drawer_scrubber = true;
+                self.page_effect = PageEffect::Slide;
+                self.launch_anim = LaunchAnim::Zoom;
+                self.long_press_empty = Action::Menu;
+                self.anim_style = AnimStyle::Auto;
             }
             Preset::Pixel => {
                 self.mode = Mode::Auto;
@@ -337,6 +464,17 @@ impl Config {
                 self.badges = Badges::Dot;
                 self.swipe_down = Action::Notifications;
                 self.swipe_up = Action::Drawer;
+                self.dock_icon_size = 56.0;
+                self.dots_style = DotsStyle::Dots;
+                self.widget_radius = 28.0;
+                self.label_size = 12.0;
+                self.label_shadow = true;
+                self.drawer_opacity = 0.95;
+                self.drawer_scrubber = false;
+                self.page_effect = PageEffect::Parallax;
+                self.launch_anim = LaunchAnim::Reveal;
+                self.long_press_empty = Action::Menu;
+                self.anim_style = AnimStyle::Auto;
             }
             Preset::Ios => {
                 self.mode = Mode::Auto;
@@ -362,6 +500,17 @@ impl Config {
                 self.badges = Badges::Count;
                 self.swipe_down = Action::Search;
                 self.swipe_up = Action::None;
+                self.dock_icon_size = 60.0;
+                self.dots_style = DotsStyle::Dots;
+                self.widget_radius = 22.0;
+                self.label_size = 11.5;
+                self.label_shadow = true;
+                self.drawer_opacity = 0.9;
+                self.drawer_scrubber = false;
+                self.page_effect = PageEffect::Slide;
+                self.launch_anim = LaunchAnim::Zoom;
+                self.long_press_empty = Action::Edit;
+                self.anim_style = AnimStyle::Auto;
             }
             Preset::Custom => return,
         }

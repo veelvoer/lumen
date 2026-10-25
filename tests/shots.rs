@@ -187,11 +187,83 @@ fn folders_menu_picker_search() {
 #[test]
 fn settings_subpages() {
     use lumen::SettingsPage as P;
-    for (page, name) in [(P::Look, "look"), (P::Home, "home"), (P::Gestures, "gestures"), (P::Icons, "icons")] {
+    for (page, name) in [(P::Motion, "motion"), (P::Layout, "layout"), (P::Behavior, "behavior"), (P::Drawer, "drawer")] {
         let mut h = make(Preset::Ios, |_| {});
         lumen(&mut h).open_settings();
         lumen(&mut h).settings_stack.push(page);
         settle(&mut h);
         shot(&mut h, &format!("settings-{name}"));
     }
+}
+
+static FRAME_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static FRAMES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Measures what one launcher frame costs on this machine. Run with --release.
+#[test]
+fn perf() {
+    use std::sync::atomic::Ordering::Relaxed;
+    for (p, name) in [(Preset::Pixel, "pixel"), (Preset::Ios, "ios"), (Preset::Nothing, "nothing")] {
+        let dir = format!("/tmp/lumen-perf-{name}-{}", std::process::id());
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut cfg = Config::default();
+        cfg.apply_preset(p);
+        cfg.save(&dir);
+        let mut h = Harness::builder()
+            .with_size(vec2(412.0, 915.0))
+            .with_pixels_per_point(2.625)
+            .with_context_setup(|ctx| lumen::install_fonts(ctx))
+            .build_ui_state(
+                move |ui, state: &mut Option<Lumen>| {
+                    let t = std::time::Instant::now();
+                    let l = state.get_or_insert_with(|| Lumen::new(ui.ctx(), dir.clone()));
+                    l.frame(ui);
+                    FRAME_NS.fetch_add(t.elapsed().as_nanos() as u64, Relaxed);
+                    FRAMES.fetch_add(1, Relaxed);
+                },
+                None,
+            );
+        for _ in 0..30 {
+            h.step();
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        for (label, setup) in [("home", 0), ("drawer", 1), ("drag", 2)] {
+            if setup == 1 {
+                lumen(&mut h).drawer_open = true;
+                for _ in 0..30 { h.step(); }
+            }
+            if setup == 2 {
+                lumen(&mut h).drawer_open = false;
+                for _ in 0..30 { h.step(); }
+                touch_down(&h, Pos2::new(120.0, 250.0));
+                for _ in 0..10 { h.step(); std::thread::sleep(std::time::Duration::from_millis(50)); }
+                touch_move(&h, Pos2::new(250.0, 330.0));
+            }
+            FRAME_NS.store(0, Relaxed);
+            FRAMES.store(0, Relaxed);
+            for _ in 0..120 {
+                h.step();
+            }
+            let n = FRAMES.load(Relaxed).max(1);
+            println!("{name} {label}: {:.2} ms/frame over {n} frames", FRAME_NS.load(Relaxed) as f64 / n as f64 / 1e6);
+        }
+    }
+}
+
+#[test]
+fn transitions() {
+    let mut h = make(Preset::Ios, |_| {});
+    lumen(&mut h).open_settings();
+    for _ in 0..2 {
+        h.step();
+    }
+    shot(&mut h, "ios-settings-opening");
+    let mut h = make(Preset::Ios, |_| {});
+    lumen(&mut h).page_target = 1.0;
+    for _ in 0..1 {
+        h.step();
+    }
+    h.step();
+    shot(&mut h, "ios-page-moving");
 }

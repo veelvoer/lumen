@@ -3,7 +3,8 @@
 use super::{App, Battery, Category, Dynamic, Haptic, Insets, RawIcon};
 use std::collections::HashMap;
 
-const APPS: [(&str, &str, [u8; 3], Category); 44] = [
+const APPS: [(&str, &str, [u8; 3], Category); 45] = [
+    ("dev.voer.lumen", "Lumen", [20, 22, 30], Category::Utilities),
     ("com.android.settings", "Settings", [96, 125, 139], Category::Utilities),
     ("com.google.android.dialer", "Phone", [66, 133, 244], Category::Utilities),
     ("com.google.android.apps.messaging", "Messages", [26, 115, 232], Category::Social),
@@ -108,7 +109,7 @@ pub fn is_24h() -> bool {
     true
 }
 pub fn local_millis() -> i64 {
-    // a fixed moment keeps screenshots stable: Fri 24 Oct 2026, 21:47
+    // a fixed moment keeps screenshots stable: Sat 24 Oct 2026, 23:47 local
     1_792_878_420_000 + 2 * 3_600_000
 }
 pub fn set_light_bars(_: bool) {}
@@ -193,4 +194,21 @@ pub fn load_icon(a: &App, px: i32, want_mono: bool) -> Option<RawIcon> {
 
 pub fn is_dark() -> bool {
     std::env::var("LUMEN_LIGHT").is_err()
+}
+
+pub fn tz_offset_ms() -> i64 {
+    2 * 3_600_000
+}
+pub fn set_blur(_: i32) {}
+pub fn set_system_bars(_: bool, _: bool) {}
+pub fn set_rotation(_: bool) {}
+pub fn take_settings_requested() -> bool {
+    false
+}
+pub fn launch_from(a: &App, _: [i32; 4], _: bool) {
+    log::info!("launch {} with animation", a.pkg);
+}
+
+pub fn now_ms() -> i64 {
+    1_792_878_420_000
 }

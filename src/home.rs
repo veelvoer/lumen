@@ -2,7 +2,8 @@
 
 use crate::app::*;
 use crate::cards;
-use crate::config::{Action, DockStyle, Item, Page, Preset, Search, Shape, WidgetKind};
+use crate::anim;
+use crate::config::{Action, DockStyle, Item, Page, PageEffect, Preset, Search, Shape, WidgetKind};
 use crate::fonts;
 use crate::phosphor as ph;
 use crate::platform::{self, Haptic};
@@ -53,24 +54,22 @@ impl Lumen {
         let k = ctx.pixels_per_point();
         let (il, it, ir, ib) = (self.insets.left / k, self.insets.top / k, self.insets.right / k, self.insets.bottom / k);
         let c = &self.cfg;
-        let side = 12.0f32;
         let icon = c.icon_size;
-        let bottom = screen.bottom() - ib.max(14.0);
+        let bottom = screen.bottom() - ib.max(14.0) - c.margin_bottom;
+        let dock_label = if c.dock_labels { 16.0 * c.font_scale * c.label_size / 12.0 + 4.0 } else { 0.0 };
         let dock_h = match c.dock {
-            DockStyle::Bare => icon + 22.0,
-            _ => icon + 30.0,
-        };
-        let margin = if c.preset == Preset::Ios { 10.0 } else { side };
+            DockStyle::Bare => c.dock_icon_size + 22.0,
+            _ => c.dock_icon_size + 30.0,
+        } + dock_label;
+        let margin = if c.preset == Preset::Ios { 10.0 } else { 12.0 } + c.margin_side;
         let left = screen.left() + il.max(margin);
         let right = screen.right() - ir.max(margin);
         let mut y = bottom;
         let mut search = None;
-        if c.search == Search::Bottom {
-            if matches!(c.preset, Preset::Pixel | Preset::Custom) {
-                // Pixel: the search pill sits under the dock
-                search = Some(Rect::from_min_max(pos2(left + 4.0, y - 56.0), pos2(right - 4.0, y)));
-                y -= 56.0 + 10.0;
-            }
+        if c.search == Search::Bottom && matches!(c.preset, Preset::Pixel | Preset::Custom) {
+            // Pixel: the search pill sits under the dock
+            search = Some(Rect::from_min_max(pos2(left + 4.0, y - 56.0), pos2(right - 4.0, y)));
+            y -= 56.0 + 10.0;
         }
         let dock = Rect::from_min_max(pos2(left, y - dock_h), pos2(right, y));
         y = dock.top();
@@ -82,7 +81,7 @@ impl Lumen {
         if c.page_dots && self.page_count() > 1 {
             y -= 26.0;
         }
-        let mut top = screen.top() + it + 6.0;
+        let mut top = screen.top() + it + 6.0 + c.margin_top;
         if c.search == Search::Top {
             search = Some(Rect::from_min_size(pos2(left + 6.0, top), vec2(right - left - 12.0, 52.0)));
             top += 62.0;
@@ -90,21 +89,23 @@ impl Lumen {
         let grid = Rect::from_min_max(pos2(left, top), pos2(right, (y - 4.0).max(top + 100.0)));
         let cell = vec2(grid.width() / c.cols as f32, grid.height() / c.rows as f32);
         let dock_slot_w = (dock.width() / c.dock_slots.max(1) as f32).min(110.0);
+        let _ = icon;
         Geo { screen, top: screen.top() + it, grid, cell, dock, search, dots_y, dock_slot_w }
     }
 
     /// The square the icon is drawn in, for a one-cell item.
     pub fn icon_rect(&self, cell: Rect) -> Rect {
         let icon = self.cfg.icon_size;
-        let label_h = if self.cfg.labels { 16.0 * self.cfg.font_scale } else { 0.0 };
+        let label_h = if self.cfg.labels { 16.0 * self.cfg.font_scale * self.cfg.label_size / 12.0 } else { 0.0 };
         let total = icon + if self.cfg.labels { 6.0 + label_h } else { 0.0 };
         let top = cell.top() + ((cell.height() - total) / 2.0).max(2.0);
         Rect::from_min_size(pos2(cell.center().x - icon / 2.0, top), vec2(icon, icon))
     }
 
     pub fn dock_icon_rect(&self, slot: Rect) -> Rect {
-        let icon = self.cfg.icon_size;
-        Rect::from_center_size(slot.center(), vec2(icon, icon))
+        let icon = self.cfg.dock_icon_size;
+        let up = if self.cfg.dock_labels { 8.0 } else { 0.0 };
+        Rect::from_center_size(slot.center() - vec2(0.0, up), vec2(icon, icon))
     }
 
     fn zones(&self, geo: &Geo, d: &Drag) -> Vec<ZoneSpec> {
@@ -134,58 +135,28 @@ impl Lumen {
     pub fn home(&mut self, root: &mut egui::Ui, ctx: &Context) {
         let screen = ctx.content_rect();
         let geo = self.geo(ctx, screen);
-        let dt = ctx.input(|i| i.stable_dt).min(0.05);
-        let k = 1.0 - (-dt * 16.0).exp();
-
-        // animation of pages, drawer and popups
-        let count = self.page_count().max(1);
-        if !matches!(self.touch, Touch::Pager) {
-            let t = self.page_target.clamp(0.0, (count - 1) as f32);
-            self.page += (t - self.page) * k;
-            if (t - self.page).abs() < 0.002 {
-                self.page = t;
-            } else {
-                ctx.request_repaint();
+        let dt = ctx.input(|i| i.stable_dt).clamp(0.001, 0.05);
+        self.step_springs(ctx, dt);
+        // the root ui must be claimed, everything is painted in layers
+        egui::CentralPanel::default().frame(Frame::NONE).show(root, |_| {});
+        self.paint_home(ctx, &geo, dt);
+        if self.screen == Screen::Home {
+            self.touch(ctx, &geo);
+            if self.drawer > 0.001 {
+                self.drawer_ui(ctx, screen);
             }
-        }
-        if !matches!(self.touch, Touch::DrawerPull) {
-            let t = if self.drawer_open { 1.0 } else { 0.0 };
-            self.drawer += (t - self.drawer) * k;
-            if (t - self.drawer).abs() < 0.003 {
-                self.drawer = t;
-            } else {
-                ctx.request_repaint();
+            if self.search_open {
+                self.search_ui(ctx, screen);
             }
-        }
-        let want_folder = if self.open_folder.is_some() || self.open_category.is_some() { 1.0 } else { 0.0 };
-        self.folder_t += (want_folder - self.folder_t) * (1.0 - (-dt * 22.0).exp());
-        if (want_folder - self.folder_t).abs() < 0.01 {
-            self.folder_t = want_folder;
-        } else {
-            ctx.request_repaint();
-        }
-
-        egui::CentralPanel::default().frame(Frame::NONE).show(root, |ui| {
-            let p = ui.painter().clone();
-            self.paint_home(ctx, &p, &geo, dt);
-        });
-
-        self.touch(ctx, &geo);
-
-        if self.drawer > 0.001 {
-            self.drawer_ui(ctx, screen);
-        }
-        if self.search_open {
-            self.search_ui(ctx, screen);
-        }
-        if self.menu.is_some() {
-            self.menu_ui(ctx, screen);
-        }
-        if self.widget_picker {
-            self.widget_picker_ui(ctx, screen);
-        }
-        if self.dialog.is_some() {
-            self.dialog_ui(ctx, screen);
+            if self.menu.is_some() {
+                self.menu_ui(ctx, screen);
+            }
+            if self.widget_picker {
+                self.widget_picker_ui(ctx, screen);
+            }
+            if self.dialog.is_some() {
+                self.dialog_ui(ctx, screen);
+            }
         }
         self.toast_ui(ctx, screen);
 
@@ -193,6 +164,59 @@ impl Lumen {
             let s = self.clock.sec as u64;
             let wait = if self.has_analog() { 1 } else { 61u64.saturating_sub(s).max(1) };
             ctx.request_repaint_after(std::time::Duration::from_secs(wait));
+        }
+    }
+
+    /// One frame of every spring that is not following a finger.
+    fn step_springs(&mut self, ctx: &Context, dt: f32) {
+        let f = self.feel;
+        let count = self.page_count().max(1);
+        let mut busy = false;
+        if !matches!(self.touch, Touch::Pager) {
+            let mut sp = anim::Spring { x: self.page, v: self.page_v, target: self.page_target.clamp(0.0, (count - 1) as f32) };
+            busy |= sp.step(dt, f.page);
+            self.page = sp.x;
+            self.page_v = sp.v;
+        }
+        if !matches!(self.touch, Touch::DrawerPull) {
+            let mut sp = anim::Spring { x: self.drawer, v: self.drawer_v, target: if self.drawer_open { 1.0 } else { 0.0 } };
+            busy |= sp.step(dt, f.drawer);
+            self.drawer = sp.x;
+            self.drawer_v = sp.v;
+        }
+        let mut sp = anim::Spring { x: self.folder_t, v: self.folder_v, target: if self.open_folder.is_some() || self.open_category.is_some() { 1.0 } else { 0.0 } };
+        busy |= sp.step(dt, f.popup);
+        self.folder_t = sp.x;
+        self.folder_v = sp.v;
+        self.menu_t.target = if self.menu.is_some() { 1.0 } else { 0.0 };
+        busy |= self.menu_t.step(dt, f.menu);
+        if self.menu.is_none() && self.menu_t.x < 0.02 {
+            self.menu_t.snap(0.0);
+        }
+        // press / lift scale of single items
+        let press = match self.cfg.preset {
+            Preset::Ios => 0.88,
+            Preset::Pixel => 0.92,
+            _ => 0.95,
+        };
+        let lifted = if let Touch::Lifted { item, .. } = &self.touch { Some(item.key()) } else { None };
+        let pressed = self.press_key.clone();
+        let mut keys: Vec<String> = self.scale_sp.keys().cloned().collect();
+        keys.extend(lifted.iter().cloned());
+        keys.extend(pressed.iter().cloned());
+        keys.sort();
+        keys.dedup();
+        for k in keys {
+            let target = if lifted.as_deref() == Some(k.as_str()) { 1.12 } else if pressed.as_deref() == Some(k.as_str()) { press } else { 1.0 };
+            let sp = self.scale_sp.entry(k.clone()).or_insert_with(|| anim::Spring::at(1.0));
+            sp.target = target;
+            busy |= sp.step(dt, f.press);
+            if !sp.moving() && target == 1.0 {
+                self.scale_sp.remove(&k);
+            }
+        }
+        if busy {
+            ctx.request_repaint();
         }
     }
 
@@ -210,141 +234,194 @@ impl Lumen {
 
     // ───────────────────────────── painting ─────────────────────────────
 
-    fn paint_home(&mut self, ctx: &Context, p: &Painter, geo: &Geo, dt: f32) {
+    fn paint_home(&mut self, ctx: &Context, geo: &Geo, dt: f32) {
         let pal = self.pal;
-        p.rect_filled(geo.screen, 0, pal.scrim);
-        if self.drawer > 0.0 {
-            p.rect_filled(geo.screen, 0, Color32::from_black_alpha((self.drawer * 120.0) as u8));
-        }
-        let k = 1.0 - (-dt * 18.0).exp();
-        let t = ctx.input(|i| i.time) as f32;
-        let dragging_key = if let Touch::Drag(d) = &self.touch { Some(d.item.key()) } else { None };
-        let lifted_key = if let Touch::Lifted { item, .. } = &self.touch { Some(item.key()) } else { None };
-        let live = cards::Live { clock: &self.clock, battery: self.battery };
-        let edit = self.edit;
-        let mut moving = false;
-        let w = geo.screen.width();
-
-        // pages
-        let Lumen { cfg, icons, anim, apps, by_pkg, badges, .. } = self;
-        let icons = icons.as_mut().unwrap();
-        let find = |pkg: &str| by_pkg.get(pkg).map(|&i| &apps[i]);
+        let cfg = self.cfg.clone();
+        let screen = geo.screen;
+        let w = screen.width();
+        let centre = screen.center().to_vec2();
         let page = self.page;
+        let t_now = ctx.input(|i| i.time) as f32;
+        let dragging_key = if let Touch::Drag(d) = &self.touch { Some(d.item.key()) } else { None };
+        let edit = self.edit;
+        let live_clock = self.clock.clone();
+        let live = cards::Live { clock: &live_clock, battery: self.battery };
+        let count = cfg.pages.len() + usize::from(cfg.app_library);
+
+        // how far the home screen steps back while something opens over it
+        let amount = self.drawer.clamp(0.0, 1.0).max(self.folder_t.clamp(0.0, 1.0)).max(self.screen_t.x.clamp(0.0, 1.0));
+        let (recede, fade) = match cfg.preset {
+            Preset::Ios => (0.08, 0.0),
+            Preset::Pixel => (0.05, 0.5),
+            Preset::Nothing => (0.0, 0.75),
+            Preset::Custom => (0.04, 0.3),
+        };
+        let r = 1.0 - recede * amount;
+        let tf = |tx: f32, s: f32| {
+            let s_total = r * s;
+            egui::emath::TSTransform::new(centre * (1.0 - s_total) + vec2(tx * r, 0.0), s_total)
+        };
+        let base_alpha = 1.0 - fade * amount;
+
+        let lib = if cfg.app_library { Some((self.lib_groups(), self.lib_layout(geo, 0.0))) } else { None };
+
+        // take the heavy parts out of self so the layer closures can use them freely
+        let mut icons = self.icons.take().unwrap();
+        let mut item_sp = std::mem::take(&mut self.item_sp);
+        let scale_sp = std::mem::take(&mut self.scale_sp);
+        let apps = std::mem::take(&mut self.apps);
+        let by_pkg = std::mem::take(&mut self.by_pkg);
+        let badges = std::mem::take(&mut self.badges);
+        let feel = self.feel;
+        let mut moving = false;
+        let find = |pkg: &str| by_pkg.get(pkg).map(|&i| &apps[i]);
         let icon_rect = |cell: Rect| {
             let icon = cfg.icon_size;
-            let label_h = if cfg.labels { 16.0 * cfg.font_scale } else { 0.0 };
+            let label_h = if cfg.labels { 16.0 * cfg.font_scale * cfg.label_size / 12.0 } else { 0.0 };
             let total = icon + if cfg.labels { 6.0 + label_h } else { 0.0 };
             let top = cell.top() + ((cell.height() - total) / 2.0).max(2.0);
             Rect::from_min_size(pos2(cell.center().x - icon / 2.0, top), vec2(icon, icon))
         };
+        // 1. the wallpaper dim
+        layer(ctx, "wall", 0, screen, egui::emath::TSTransform::IDENTITY, 1.0, |p| {
+            p.rect_filled(screen, 0, pal.scrim);
+        });
 
-        for (pi, pg) in cfg.pages.iter().enumerate() {
-            let off = (pi as f32 - page) * w;
-            if off.abs() >= w {
-                continue;
-            }
-            for pl in &pg.items {
-                let key = pl.item.key();
-                let (sw, sh) = (pl.item.span(cfg.cols).0.min(cfg.cols), pl.item.span(cfg.cols).1.min(cfg.rows));
-                let target = geo.cell_rect(pl.col, pl.row, sw, sh);
-                let cur = anim.entry(key.clone()).or_insert(target.min);
-                *cur += (target.min - *cur) * k;
-                if (target.min - *cur).length() > 0.4 {
-                    moving = true;
-                } else {
-                    *cur = target.min;
+        // 2. pages, each in its own transformed layer so the effect moves everything on it, text too
+        for pi in 0..cfg.pages.len().max(1) {
+            let d = pi as f32 - page;
+            let (tx, s, a) = page_effect(cfg.page_effect, d, w);
+            let show = d.abs() < 1.0 && a > 0.003;
+            layer(ctx, "page", pi, screen, tf(tx, s), if show { a * base_alpha } else { 0.0 }, |p| {
+                if !show {
+                    return;
                 }
-                let cell = Rect::from_min_size(*cur + vec2(off, 0.0), target.size());
-                let lifted = lifted_key.as_deref() == Some(key.as_str());
-                let jig = if edit { (t * 14.0 + pl.col as f32 * 1.3 + pl.row as f32 * 0.7).sin() * 0.025 } else { 0.0 };
-                paint_item(p, &pl.item, cell, &icon_rect, cfg, &pal, icons, &find, badges, &live, if lifted { 1.12 } else { 1.0 }, jig, 1.0, true, lifted);
-                if edit && dragging_key.as_deref() != Some(key.as_str()) {
-                    paint_remove_badge(p, &pl.item, cell, &icon_rect, cfg, &pal);
+                let Some(pg) = cfg.pages.get(pi) else { return };
+                for pl in &pg.items {
+                    let key = pl.item.key();
+                    let (sw, sh) = (pl.item.span(cfg.cols).0.min(cfg.cols), pl.item.span(cfg.cols).1.min(cfg.rows));
+                    let target = geo.cell_rect(pl.col, pl.row, sw, sh);
+                    let sp = item_sp.entry(key.clone()).or_insert_with(|| anim::Spring2::at(target.min));
+                    moving |= sp.step_to(target.min, dt, feel.item);
+                    let cell = Rect::from_min_size(sp.pos(), target.size());
+                    let sc = scale_sp.get(&key).map(|s| s.x).unwrap_or(1.0);
+                    let jig = if edit { jiggle(t_now, &key) } else { 0.0 };
+                    paint_item(p, &pl.item, cell, &icon_rect, &cfg, &pal, &mut icons, &find, &badges, &live, sc, jig, 1.0, true, sc > 1.05);
+                    if edit && dragging_key.as_deref() != Some(key.as_str()) {
+                        paint_remove_badge(p, &pl.item, cell, &icon_rect, &cfg, &pal);
+                    }
                 }
-            }
+            });
         }
 
-        // dock (it slides away on the App Library page, like iOS)
-        let dock_vis = if cfg.app_library { 1.0 - (page - (cfg.pages.len() as f32 - 1.0)).clamp(0.0, 1.0) } else { 1.0 };
-        let dp = &{
-            let mut q = p.clone();
-            q.set_opacity(dock_vis);
-            q
+        // the App Library is the last page
+        if let Some((groups, (search_r, cards_l, _))) = &lib {
+            let pi = cfg.pages.len();
+            let d = pi as f32 - page;
+            let (tx, sc, a) = page_effect(cfg.page_effect, d, w);
+            let show = d.abs() < 1.0 && a > 0.003;
+            layer(ctx, "page", pi, screen, tf(tx, sc), if show { a * base_alpha } else { 0.0 }, |p| {
+                if show {
+                    paint_library(p, geo, groups, *search_r, cards_l, &cfg, &pal, &mut icons, &find, &badges);
+                }
+            });
+        }
+        self.finish_home(ctx, geo, dt, icons, item_sp, scale_sp, apps, by_pkg, badges, &cfg, &pal, &live, edit, t_now, dragging_key, moving, base_alpha, &tf, count, page);
+    }
+
+    /// Dock, search pill, dots and the overlays that sit above the pages.
+    #[allow(clippy::too_many_arguments)]
+    fn finish_home(
+        &mut self,
+        ctx: &Context,
+        geo: &Geo,
+        dt: f32,
+        mut icons: crate::icons::Icons,
+        mut item_sp: std::collections::HashMap<String, anim::Spring2>,
+        scale_sp: std::collections::HashMap<String, anim::Spring>,
+        apps: Vec<platform::App>,
+        by_pkg: std::collections::HashMap<String, usize>,
+        badges: std::collections::HashMap<String, u32>,
+        cfg: &crate::config::Config,
+        pal: &crate::theme::Palette,
+        live: &cards::Live,
+        edit: bool,
+        t_now: f32,
+        dragging_key: Option<String>,
+        mut moving: bool,
+        base_alpha: f32,
+        tf: &dyn Fn(f32, f32) -> egui::emath::TSTransform,
+        count: usize,
+        page: f32,
+    ) {
+        let screen = geo.screen;
+        let feel = self.feel;
+        let find = |pkg: &str| by_pkg.get(pkg).map(|&i| &apps[i]);
+        let dock_icon = |c: Rect| {
+            let up = if cfg.dock_labels { 8.0 } else { 0.0 };
+            Rect::from_center_size(c.center() - vec2(0.0, up), vec2(cfg.dock_icon_size, cfg.dock_icon_size))
         };
-        if dock_vis < 0.02 {
-            // nothing to draw
-        } else if cfg.dock != DockStyle::Bare {
-            let fill_rect = geo.dock;
-            if cfg.dock == DockStyle::Glass {
-                widgets::glass(dp, fill_rect, cfg.dock_radius, &pal);
-            } else {
-                dp.rect_filled(fill_rect, cr(cfg.dock_radius), pal.sheet);
-            }
-        }
-        let n = cfg.dock_items.len();
-        for (i, it) in cfg.dock_items.iter().enumerate() {
-            let slot = geo.dock_slot(i, n);
-            let key = it.key();
-            let target = slot.min;
-            let cur = anim.entry(key.clone()).or_insert(target);
-            *cur += (target - *cur) * k;
-            if (target - *cur).length() > 0.4 {
-                moving = true;
-            } else {
-                *cur = target;
-            }
-            let cell = Rect::from_min_size(*cur, slot.size());
-            let lifted = lifted_key.as_deref() == Some(key.as_str());
-            let jig = if edit { (t * 14.0 + i as f32 * 1.1).sin() * 0.025 } else { 0.0 };
-            let dock_icon = |c: Rect| Rect::from_center_size(c.center(), vec2(cfg.icon_size, cfg.icon_size));
-            paint_item(dp, it, cell, &dock_icon, cfg, &pal, icons, &find, badges, &live, if lifted { 1.12 } else { 1.0 }, jig, 1.0, false, lifted);
-            if edit {
-                paint_remove_badge(dp, it, cell, &dock_icon, cfg, &pal);
-            }
-        }
 
-        // search pill
-        if let Some(s) = geo.search {
-            match cfg.search {
-                Search::Off => {}
-                _ => widgets::search_pill(p, s, if cfg.preset == Preset::Pixel { "Search apps, web and more" } else { "Search" }, cfg, &pal, cfg.preset == Preset::Pixel),
+        // 3. dock: it slides away on the App Library page, like iOS
+        let dock_vis = if cfg.app_library { 1.0 - (page - (cfg.pages.len() as f32 - 1.0)).clamp(0.0, 1.0) } else { 1.0 };
+        layer(ctx, "dock", 0, screen, tf(0.0, 1.0), dock_vis * base_alpha, |p| {
+            if dock_vis < 0.02 {
+                return;
             }
-        }
-
-        // page dots
-        let count = cfg.pages.len() + usize::from(cfg.app_library);
-        if cfg.page_dots && count > 1 {
-            let gap = 14.0;
-            for i in 0..count {
-                let x = geo.screen.center().x + (i as f32 - (count - 1) as f32 / 2.0) * gap;
-                let on = (page - i as f32).abs() < 0.5;
-                let c = pos2(x, geo.dots_y);
-                if cfg.app_library && i == count - 1 {
-                    // the App Library page gets a little grid mark, like iOS
-                    widgets::glyph_at(p, c, Align2::CENTER_CENTER, ph::SQUARES_FOUR, 10.0, if on { pal.home_text } else { pal.home_text.gamma_multiply(0.45) });
-                } else if cfg.preset == Preset::Nothing {
-                    p.rect_filled(Rect::from_center_size(c, vec2(if on { 7.0 } else { 4.0 }, if on { 7.0 } else { 4.0 })), cr(4.0), if on { pal.accent } else { pal.home_text.gamma_multiply(0.4) });
+            if cfg.dock != DockStyle::Bare {
+                if cfg.dock == DockStyle::Glass {
+                    widgets::glass(p, geo.dock, cfg.dock_radius, pal);
                 } else {
-                    p.circle_filled(c, if on { 3.6 } else { 3.0 }, if on { pal.home_text } else { pal.home_text.gamma_multiply(0.45) });
+                    p.rect_filled(geo.dock, cr(cfg.dock_radius), pal.sheet);
                 }
             }
-        }
-
-        // iOS App Library page
-        if cfg.app_library {
-            let off = (cfg.pages.len() as f32 - page) * w;
-            if off.abs() < w {
-                self.paint_library(ctx, p, geo, off);
+            let n = cfg.dock_items.len();
+            for (i, it) in cfg.dock_items.iter().enumerate() {
+                let slot = geo.dock_slot(i, n);
+                let key = it.key();
+                let sp = item_sp.entry(key.clone()).or_insert_with(|| anim::Spring2::at(slot.min));
+                moving |= sp.step_to(slot.min, dt, feel.item);
+                let cell = Rect::from_min_size(sp.pos(), slot.size());
+                let sc = scale_sp.get(&key).map(|s| s.x).unwrap_or(1.0);
+                let jig = if edit { jiggle(t_now, &key) } else { 0.0 };
+                paint_item(p, it, cell, &dock_icon, cfg, pal, &mut icons, &find, &badges, live, sc, jig, 1.0, cfg.dock_labels, sc > 1.05);
+                if edit {
+                    paint_remove_badge(p, it, cell, &dock_icon, cfg, pal);
+                }
             }
-        }
+        });
 
+        // 4. search pill, page dots, edit chrome
+        layer(ctx, "top", 0, screen, tf(0.0, 1.0), base_alpha, |p| {
+            if let Some(s) = geo.search {
+                if cfg.search != Search::Off {
+                    widgets::search_pill(p, s, if cfg.preset == Preset::Pixel { "Search apps, web and more" } else { "Search" }, cfg, pal, cfg.preset == Preset::Pixel);
+                }
+            }
+            if cfg.page_dots && count > 1 {
+                paint_dots(p, geo, cfg, pal, count, page);
+            }
+        });
+
+        // restore what we borrowed
+        self.icons = Some(icons);
+        self.item_sp = item_sp;
+        self.scale_sp = scale_sp;
+        self.apps = apps;
+        self.by_pkg = by_pkg;
+        self.badges = badges;
+
+        // 5. things above: popup, edit chrome, the dragged item
+        self.paint_folder_popup(ctx, geo);
         if self.edit {
-            self.paint_edit_chrome(p, geo);
+            let me = &*self;
+            layer(ctx, "chrome", 0, screen, egui::emath::TSTransform::IDENTITY, 1.0, |p| me.paint_edit_chrome(p, geo));
         }
-
-        self.paint_folder_popup(ctx, p, geo);
-        self.paint_drag(ctx, p, geo);
-
+        self.paint_drag(ctx, geo);
+        // keep the stacking order stable when pages come and go
+        for name in ["dock", "top", "popup", "chrome", "drag"] {
+            ctx.move_to_top(egui::LayerId::new(egui::Order::Middle, egui::Id::new(("lumen-layer", name, 0usize))));
+        }
         if moving {
             ctx.request_repaint();
         }
@@ -356,6 +433,9 @@ impl Lumen {
         let plus = Rect::from_center_size(pos2(geo.screen.left() + 34.0, y), vec2(40.0, 40.0));
         p.circle_filled(plus.center(), 18.0, Color32::from_white_alpha(60));
         widgets::glyph_at(p, plus.center(), Align2::CENTER_CENTER, ph::PLUS, 20.0, Color32::WHITE);
+        let gear = pos2(geo.screen.left() + 34.0 + 48.0, y);
+        p.circle_filled(gear, 18.0, Color32::from_white_alpha(60));
+        widgets::glyph_at(p, gear, Align2::CENTER_CENTER, ph::GEAR, 20.0, Color32::WHITE);
         let done = Rect::from_center_size(pos2(geo.screen.right() - 52.0, y), vec2(80.0, 36.0));
         p.rect_filled(done, cr(18.0), Color32::from_white_alpha(60));
         p.text(done.center(), Align2::CENTER_CENTER, "Done", fonts::body(&self.cfg, 16.0, true), Color32::WHITE);
@@ -406,49 +486,6 @@ impl Lumen {
         (search, out, content)
     }
 
-    fn paint_library(&mut self, _ctx: &Context, p: &Painter, geo: &Geo, off: f32) {
-        let groups = self.lib_groups();
-        let (search, cards_l, _) = self.lib_layout(geo, off);
-        let pal = self.pal;
-        p.rect_filled(Rect::from_min_max(pos2(geo.screen.left() + off, geo.screen.top()), pos2(geo.screen.right() + off, geo.screen.bottom())), 0, Color32::from_black_alpha(70));
-        let p = p.with_clip_rect(Rect::from_min_max(pos2(geo.screen.left(), geo.top), geo.screen.max));
-        p.rect_filled(search, cr(22.0), Color32::from_white_alpha(46));
-        widgets::glyph_at(&p, search.left_center() + vec2(16.0, 0.0), Align2::LEFT_CENTER, ph::MAGNIFYING_GLASS, 18.0, Color32::from_white_alpha(190));
-        p.text(search.left_center() + vec2(44.0, 0.0), Align2::LEFT_CENTER, "App Library", fonts::body(&self.cfg, 16.0, false), Color32::from_white_alpha(190));
-        let Lumen { cfg, icons, apps, by_pkg, badges, .. } = self;
-        let icons = icons.as_mut().unwrap();
-        for ((name, _cat, pkgs), (rect, slots)) in groups.iter().zip(cards_l.iter()) {
-            if rect.bottom() < geo.top || rect.top() > geo.screen.bottom() {
-                continue;
-            }
-            p.rect_filled(*rect, cr(24.0), pal.folder_bg);
-            for s in 0..4usize {
-                let Some(pkg) = pkgs.get(s) else { break };
-                if s == 3 && pkgs.len() > 4 {
-                    // the fourth slot becomes a small group of the rest
-                    let slot = slots[3];
-                    let mini = slot.width() * 0.46;
-                    for (j, rest) in pkgs.iter().skip(3).take(4).enumerate() {
-                        let r = Rect::from_min_size(slot.min + vec2((j % 2) as f32 * (mini + slot.width() * 0.08), (j / 2) as f32 * (mini + slot.width() * 0.08)), vec2(mini, mini));
-                        if let Some(&ai) = by_pkg.get(rest) {
-                            widgets::app_icon(&p, r, &apps[ai], icons, cfg, &pal, 1.0, 0.0, 1.0);
-                        }
-                    }
-                    break;
-                }
-                if let Some(&ai) = by_pkg.get(pkg) {
-                    widgets::app_icon(&p, slots[s], &apps[ai], icons, cfg, &pal, 1.0, 0.0, 1.0);
-                    if let Some(c) = badges.get(pkg) {
-                        if cfg.badges != crate::config::Badges::Off {
-                            widgets::badge(&p, slots[s], *c, cfg, &pal);
-                        }
-                    }
-                }
-            }
-            widgets::label(&p, pos2(rect.center().x, rect.bottom() + 6.0), name, cfg, Color32::WHITE, rect.width(), true, 1.0);
-        }
-    }
-
     // folder / category popup
     fn popup_apps(&self) -> Option<(String, Vec<String>, bool)> {
         if let Some(id) = self.open_folder {
@@ -478,7 +515,7 @@ impl Lumen {
     }
 
     pub fn popup_geo(&self, geo: &Geo, n: usize) -> (Rect, Rect, Vec<Rect>) {
-        let cols = 3usize;
+        let cols = self.cfg.folder_cols.clamp(2, 5);
         let rows = n.div_ceil(cols).clamp(1, 5);
         let icon = self.cfg.icon_size;
         let cw = (icon + 34.0).max(86.0);
@@ -493,88 +530,118 @@ impl Lumen {
         (panel, title, cells)
     }
 
-    fn paint_folder_popup(&mut self, _ctx: &Context, p: &Painter, geo: &Geo) {
-        let Some((name, pkgs, _)) = self.popup_apps() else { return };
+    fn paint_folder_popup(&mut self, ctx: &Context, geo: &Geo) {
         let t = self.folder_t;
-        if t <= 0.0 {
+        let popup = self.popup_apps();
+        let Some((name, pkgs, _)) = popup else {
+            if t <= 0.01 {
+                self.folder_origin = None;
+            }
+            // keep the layer alive and empty so the stacking order stays put
+            layer(ctx, "popup", 0, geo.screen, egui::emath::TSTransform::IDENTITY, 0.0, |_| {});
+            return;
+        };
+        if t <= 0.001 {
+            layer(ctx, "popup", 0, geo.screen, egui::emath::TSTransform::IDENTITY, 0.0, |_| {});
             return;
         }
         let pal = self.pal;
         let (panel, title, cells) = self.popup_geo(geo, pkgs.len());
-        let sc = 0.86 + 0.14 * t;
-        let c0 = panel.center();
-        let tf = |r: Rect| Rect::from_center_size(c0 + (r.center() - c0) * sc, r.size() * sc);
-        p.rect_filled(geo.screen, 0, Color32::from_black_alpha((t * 130.0) as u8));
-        let ios = self.cfg.preset == Preset::Ios;
-        let panel_fill = if ios { Color32::from_rgba_unmultiplied(70, 70, 80, 200) } else { pal.sheet };
-        p.rect_filled(tf(panel), cr(if ios { 34.0 } else { 36.0 }), panel_fill.gamma_multiply(t));
+        let origin = self.folder_origin.map(|r| r.center()).unwrap_or(panel.center());
+        let s = 0.22 + 0.78 * t;
+        let xf = egui::emath::TSTransform::new(origin.to_vec2() * (1.0 - s), s);
+        let alpha = (t * 2.2).clamp(0.0, 1.0);
+        let cfg = self.cfg.clone();
+        let mut icons = self.icons.take().unwrap();
+        let ios = cfg.preset == Preset::Ios;
         let tcol = if ios { Color32::WHITE } else { pal.text };
-        p.text(tf(title).center_top() + vec2(0.0, 12.0), Align2::CENTER_TOP, name, fonts::body(&self.cfg, 20.0 * sc, true), tcol.gamma_multiply(t));
-        let Lumen { cfg, icons, apps, by_pkg, badges, .. } = self;
-        let icons = icons.as_mut().unwrap();
-        for (pkg, cell) in pkgs.iter().zip(cells.iter()) {
-            let Some(&ai) = by_pkg.get(pkg) else { continue };
-            let cell = tf(*cell);
-            let ir = Rect::from_center_size(pos2(cell.center().x, cell.top() + 12.0 + cfg.icon_size * sc / 2.0), vec2(cfg.icon_size * sc, cfg.icon_size * sc));
-            widgets::app_icon(p, ir, &apps[ai], icons, cfg, &pal, 1.0, 0.0, t);
-            if let Some(c) = badges.get(pkg) {
-                widgets::badge(p, ir, *c, cfg, &pal);
+        let screen = geo.screen;
+        // the dim sits in its own layer: it must not shrink with the panel
+        layer(ctx, "popup-dim", 0, screen, egui::emath::TSTransform::IDENTITY, 1.0, |p| {
+            p.rect_filled(screen, 0, Color32::from_black_alpha((t.clamp(0.0, 1.0) * if ios { 90.0 } else { 130.0 }) as u8));
+        });
+        layer(ctx, "popup", 0, screen, xf, alpha, |p| {
+            let panel_fill = if ios { Color32::from_rgba_unmultiplied(70, 70, 80, 215) } else { pal.sheet };
+            p.rect_filled(panel, cr(if ios { 34.0 } else { 36.0 }), panel_fill);
+            p.text(title.center_top() + vec2(0.0, 12.0), Align2::CENTER_TOP, &name, fonts::body(&cfg, 20.0, true), tcol);
+            for (pkg, cell) in pkgs.iter().zip(cells.iter()) {
+                let Some(&ai) = self.by_pkg.get(pkg) else { continue };
+                let ir = Rect::from_center_size(pos2(cell.center().x, cell.top() + 12.0 + cfg.icon_size / 2.0), vec2(cfg.icon_size, cfg.icon_size));
+                widgets::app_icon(p, ir, &self.apps[ai], &mut icons, &cfg, &pal, 1.0, 0.0, 1.0);
+                if let Some(c) = self.badges.get(pkg) {
+                    widgets::badge(p, ir, *c, &cfg, &pal);
+                }
+                if cfg.labels {
+                    widgets::label(p, pos2(cell.center().x, ir.bottom() + 5.0), cfg.names.get(pkg).map(|s| s.as_str()).unwrap_or(&self.apps[ai].label), &cfg, tcol, cell.width() - 6.0, false, 1.0);
+                }
             }
-            if cfg.labels {
-                widgets::label(p, pos2(cell.center().x, ir.bottom() + 5.0), cfg.names.get(pkg).map(|s| s.as_str()).unwrap_or(&apps[ai].label), cfg, tcol, cell.width() - 6.0, false, t);
-            }
-        }
+        });
+        self.icons = Some(icons);
     }
 
-    fn paint_drag(&mut self, ctx: &Context, p: &Painter, geo: &Geo) {
-        let Touch::Drag(d) = self.touch.clone() else { return };
-        let pal = self.pal;
-        // drop hint
-        match &d.hover {
-            Hover::Cell { page, col, row } if *page == self.page.round() as usize => {
-                let (w, h) = d.item.span(self.cfg.cols);
-                if let Some((c, r)) = self.cfg.nearest_free(*page, *col, *row, w.min(self.cfg.cols), h.min(self.cfg.rows), None) {
-                    let cell = geo.cell_rect(c, r, w, h).shrink(4.0);
-                    p.rect_stroke(self.icon_rect_for(&d.item, cell), cr(widgets::plate_radius(&self.cfg, self.cfg.icon_size)), Stroke::new(1.5, pal.home_text.gamma_multiply(0.45)), StrokeKind::Inside);
-                }
-            }
-            Hover::Merge(key) => {
-                if let Some(r) = self.rect_of_key(geo, key) {
-                    let ir = self.icon_rect(r);
-                    p.rect_filled(ir.expand(8.0), cr(widgets::plate_radius(&self.cfg, ir.width() + 16.0)), Color32::from_white_alpha(70));
-                }
-            }
-            _ => {}
-        }
-        // zones
-        for z in self.zones(geo, &d) {
-            let on = d.hover == z.hover;
-            let bg = if on { pal.accent } else { Color32::from_black_alpha(120) };
-            p.rect_filled(z.rect, cr(26.0), bg);
-            let fg = if on { pal.on_accent } else { Color32::WHITE };
-            let font = fonts::body(&self.cfg, 14.5, true);
-            let tw = widgets::text_width(p, z.label, &font);
-            let start = z.rect.center().x - (tw + 30.0) / 2.0;
-            widgets::glyph_at(p, pos2(start, z.rect.center().y), Align2::LEFT_CENTER, z.glyph, 20.0, fg);
-            p.text(pos2(start + 30.0, z.rect.center().y), Align2::LEFT_CENTER, z.label, font, fg);
-        }
-        // the item on the finger
-        let center = d.pos - d.grab;
-        let (sw, sh) = d.item.span(self.cfg.cols);
-        let size = match &d.item {
-            Item::Widget { .. } => vec2(sw.min(self.cfg.cols) as f32 * geo.cell.x, sh.min(self.cfg.rows) as f32 * geo.cell.y),
-            _ => vec2(self.cfg.icon_size, self.cfg.icon_size),
+    fn paint_drag(&mut self, ctx: &Context, geo: &Geo) {
+        let Touch::Drag(d) = self.touch.clone() else {
+            layer(ctx, "drag", 0, geo.screen, egui::emath::TSTransform::IDENTITY, 0.0, |_| {});
+            return;
         };
-        let rect = Rect::from_center_size(center, size * 1.1);
-        widgets::shadow(p, rect, widgets::plate_radius(&self.cfg, rect.width()), 90);
-        let live = cards::Live { clock: &self.clock, battery: self.battery };
-        let Lumen { cfg, icons, apps, by_pkg, badges, .. } = self;
-        let icons = icons.as_mut().unwrap();
-        let find = |pkg: &str| by_pkg.get(pkg).map(|&i| &apps[i]);
+        let pal = self.pal;
+        let cfg = self.cfg.clone();
+        let zones = self.zones(geo, &d);
+        let hint: Option<Rect> = match &d.hover {
+            Hover::Cell { page, col, row } if *page == self.page.round() as usize => {
+                let (w, h) = d.item.span(cfg.cols);
+                cfg.nearest_free(*page, *col, *row, w.min(cfg.cols), h.min(cfg.rows), None).map(|(c, r)| self.icon_rect_for(&d.item, geo.cell_rect(c, r, w, h).shrink(4.0)))
+            }
+            Hover::Merge(key) => self.rect_of_key(geo, key).map(|r| self.icon_rect(r).expand(8.0)),
+            _ => None,
+        };
+        let merging = matches!(d.hover, Hover::Merge(_));
+        let live_clock = self.clock.clone();
+        let live = cards::Live { clock: &live_clock, battery: self.battery };
+        let mut icons = self.icons.take().unwrap();
+        let center = d.pos - d.grab;
+        let (sw, sh) = d.item.span(cfg.cols);
+        let size = match &d.item {
+            Item::Widget { .. } => vec2(sw.min(cfg.cols) as f32 * geo.cell.x, sh.min(cfg.rows) as f32 * geo.cell.y),
+            _ => vec2(cfg.icon_size, cfg.icon_size),
+        };
         let whole = Rect::from_center_size(center, size * 1.1);
-        let id = |c: Rect| Rect::from_center_size(c.center(), vec2(cfg.icon_size * 1.1, cfg.icon_size * 1.1));
-        paint_item(p, &d.item, whole, &id, cfg, &pal, icons, &find, badges, &live, 1.0, 0.0, 1.0, false, false);
+        let font = fonts::body(&cfg, 14.5, true);
+        layer(ctx, "drag", 0, geo.screen, egui::emath::TSTransform::IDENTITY, 1.0, |p| {
+            if let Some(r) = hint {
+                if merging {
+                    p.rect_filled(r, cr(widgets::plate_radius(&cfg, r.width())), Color32::from_white_alpha(70));
+                } else {
+                    p.rect_stroke(r, cr(widgets::plate_radius(&cfg, cfg.icon_size)), Stroke::new(1.5, pal.home_text.gamma_multiply(0.45)), StrokeKind::Inside);
+                }
+            }
+            for z in &zones {
+                let on = d.hover == z.hover;
+                let bg = if on { pal.accent } else { Color32::from_black_alpha(120) };
+                p.rect_filled(z.rect, cr(26.0), bg);
+                let fg = if on { pal.on_accent } else { Color32::WHITE };
+                let tw = widgets::text_width(p, z.label, &font);
+                let start = z.rect.center().x - (tw + 30.0) / 2.0;
+                widgets::glyph_at(p, pos2(start, z.rect.center().y), Align2::LEFT_CENTER, z.glyph, 20.0, fg);
+                p.text(pos2(start + 30.0, z.rect.center().y), Align2::LEFT_CENTER, z.label, font.clone(), fg);
+            }
+            widgets::shadow(p, whole, widgets::plate_radius(&cfg, whole.width()), 90);
+            let find = |pkg: &str| self.by_pkg.get(pkg).map(|&i| &self.apps[i]);
+            let id = |c: Rect| Rect::from_center_size(c.center(), vec2(cfg.icon_size * 1.1, cfg.icon_size * 1.1));
+            paint_item(p, &d.item, whole, &id, &cfg, &pal, &mut icons, &find, &self.badges, &live, 1.0, 0.0, 1.0, false, false);
+        });
+        self.icons = Some(icons);
         ctx.request_repaint();
+    }
+
+    /// The icon (or widget) rectangle of an item that is on the page or in the dock now.
+    fn key_icon_rect(&self, geo: &Geo, key: &str) -> Option<Rect> {
+        let r = self.rect_of_key(geo, key)?;
+        if self.cfg.dock_items.iter().any(|i| i.key() == key) {
+            return Some(self.dock_icon_rect(r));
+        }
+        let widget = self.cfg.pages.iter().flat_map(|p| p.items.iter()).any(|p| p.item.key() == key && matches!(p.item, Item::Widget { .. }));
+        Some(if widget { r } else { self.icon_rect(r) })
     }
 
     fn icon_rect_for(&self, item: &Item, cell: Rect) -> Rect {
@@ -605,6 +672,9 @@ impl Lumen {
         if self.edit {
             if (pos - pos2(geo.screen.left() + 34.0, edit_chrome_y(geo))).length() < 26.0 {
                 return Hit::EditAdd;
+            }
+            if (pos - pos2(geo.screen.left() + 34.0 + 48.0, edit_chrome_y(geo))).length() < 26.0 {
+                return Hit::EditSettings;
             }
             if Rect::from_center_size(pos2(geo.screen.right() - 52.0, edit_chrome_y(geo)), vec2(90.0, 44.0)).contains(pos) {
                 return Hit::EditDone;
@@ -689,11 +759,28 @@ impl Lumen {
         let w = geo.screen.width();
         let h = geo.screen.height();
         let count = self.page_count().max(1);
+        if !matches!(self.touch, Touch::Down { .. }) {
+            self.press_key = None;
+        }
+        // two fingers pulling together
+        if self.screen == Screen::Home && !self.overlay_blocks_home() && matches!(self.touch, Touch::Idle | Touch::Down { .. }) {
+            if let Some(m) = ctx.input(|i| i.multi_touch()) {
+                if m.zoom_delta < 0.985 && self.cfg.pinch != Action::None {
+                    self.touch = Touch::Spent;
+                    let a = self.cfg.pinch;
+                    self.run_action(ctx, a);
+                }
+            }
+        }
         match self.touch.clone() {
             Touch::Idle => {
                 if pressed && !self.overlay_blocks_home() {
                     if let Some(pos) = pos {
                         let hit = self.hit_at(geo, pos);
+                        self.press_key = match (&hit, self.edit) {
+                            (Hit::Item(k), false) => Some(k.clone()),
+                            _ => None,
+                        };
                         self.touch = Touch::Down { start: pos, t0: time, hit };
                     }
                 }
@@ -747,17 +834,19 @@ impl Lumen {
                 let rubber = if self.page < 0.0 || self.page > max { 0.35 } else { 1.0 };
                 self.page -= delta.x / w * rubber;
                 if !down {
-                    self.page_target = (self.page - vel.x / w * 0.3).round().clamp(0.0, max);
+                    // carry the finger's speed into the spring so the page keeps moving the way it was flicked
+                    let v = -vel.x / w;
+                    self.page_v = v;
+                    self.page_target = (self.page + v * 0.2).round().clamp(0.0, max);
                     self.touch = Touch::Idle;
                 }
             }
             Touch::DrawerPull => {
                 self.drawer = (self.drawer - delta.y / (h * 0.55)).clamp(0.0, 1.0);
                 if !down {
-                    self.drawer_open = self.drawer > 0.3 || vel.y < -500.0;
-                    if self.drawer_open && self.drawer < 0.3 && vel.y > 0.0 {
-                        self.drawer_open = false;
-                    }
+                    let v = -vel.y / (h * 0.55);
+                    self.drawer_v = v;
+                    self.drawer_open = self.drawer + v * 0.18 > 0.5;
                     self.touch = Touch::Idle;
                 }
             }
@@ -794,10 +883,10 @@ impl Lumen {
             match hit {
                 Hit::EditDone => self.edit = false,
                 Hit::EditAdd => self.widget_picker = true,
+                Hit::EditSettings => self.open_settings(),
                 Hit::Item(key) => {
                     // the remove badge sits on the top-left corner of the icon
-                    if let Some(r) = self.rect_of_key(geo, &key) {
-                        let ir = self.icon_rect_for(&self.find_item(&key).map(|x| x.0).unwrap_or(Item::App(String::new())), r);
+                    if let Some(ir) = self.key_icon_rect(geo, &key) {
                         if (pos - ir.left_top()).length() < 24.0 {
                             self.remove_item(&key);
                         }
@@ -813,8 +902,12 @@ impl Lumen {
             Hit::Item(key) => {
                 if let Some((item, _)) = self.find_item(&key) {
                     match item {
-                        Item::App(pkg) => self.launch(ctx, &pkg),
+                        Item::App(pkg) => {
+                            let from = self.key_icon_rect(geo, &key);
+                            self.launch_at(ctx, &pkg, from);
+                        }
                         Item::Folder { id, .. } => {
+                            self.folder_origin = self.key_icon_rect(geo, &key);
                             self.open_folder = Some(id);
                             self.haptic(Haptic::Tick);
                         }
@@ -855,8 +948,7 @@ impl Lumen {
         match hit {
             Hit::Item(key) => {
                 let Some((item, from)) = self.find_item(key) else { return };
-                let rect = self.rect_of_key(geo, key).unwrap_or(Rect::from_center_size(start, vec2(60.0, 60.0)));
-                let anchor = self.icon_rect_for(&item, rect);
+                let anchor = self.key_icon_rect(geo, key).unwrap_or(Rect::from_center_size(start, vec2(60.0, 60.0)));
                 let target = match &item {
                     Item::App(p) => Target::App { pkg: p.clone(), on_home: true },
                     Item::Folder { id, .. } => Target::Folder(*id),
@@ -887,10 +979,9 @@ impl Lumen {
                     self.touch = Touch::Spent;
                     return;
                 }
-                if self.cfg.preset == Preset::Ios {
-                    self.edit = true;
-                } else {
-                    self.menu = Some(Menu { target: Target::Home, anchor: Rect::from_center_size(start, vec2(10.0, 10.0)) });
+                match self.cfg.long_press_empty {
+                    Action::Menu => self.menu = Some(Menu { target: Target::Home, anchor: Rect::from_center_size(start, vec2(10.0, 10.0)) }),
+                    a => self.run_action(ctx, a),
                 }
                 self.touch = Touch::Spent;
             }
@@ -904,8 +995,7 @@ impl Lumen {
         let (item, from, rect) = match hit {
             Hit::Item(key) => {
                 let Some((item, from)) = self.find_item(key) else { return };
-                let r = self.rect_of_key(geo, key).unwrap_or(Rect::from_center_size(start, vec2(60.0, 60.0)));
-                let r = self.icon_rect_for(&item, r);
+                let r = self.key_icon_rect(geo, key).unwrap_or(Rect::from_center_size(start, vec2(60.0, 60.0)));
                 (item, from, r)
             }
             _ => return,
@@ -1076,6 +1166,21 @@ impl Lumen {
             }
             Hover::None => {}
         }
+        if placed && matches!(d.hover, Hover::Cell { .. } | Hover::Dock(_)) {
+            // let the item fly from the finger into its cell instead of jumping
+            let key = item.key();
+            let dummy = Rect::from_min_size(Pos2::ZERO, geo.cell);
+            let off = match d.hover {
+                Hover::Dock(_) => self.dock_icon_rect(Rect::from_min_size(Pos2::ZERO, vec2(geo.dock_slot_w, geo.dock.height()))).center().to_vec2(),
+                _ => match item {
+                    Item::Widget { .. } => vec2(geo.cell.x, geo.cell.y) * (item.span(self.cfg.cols).0 as f32 / 2.0).max(0.5),
+                    _ => self.icon_rect(dummy).center().to_vec2(),
+                },
+            };
+            let center = d.pos - d.grab;
+            self.item_sp.insert(key.clone(), anim::Spring2::at(center - off));
+            self.scale_sp.insert(key, anim::Spring { x: 1.1, v: 0.0, target: 1.0 });
+        }
         let removed_on_purpose = matches!(d.hover, Hover::Remove);
         let acted = matches!(d.hover, Hover::Info | Hover::Uninstall);
         if !placed && !removed_on_purpose && !matches!(d.from, Source::Drawer) || (acted && !matches!(d.from, Source::Drawer)) {
@@ -1220,7 +1325,7 @@ fn paint_item<'a>(
                 widgets::badge(p, Rect::from_center_size(ir.center(), ir.size() * scale), *c, cfg, pal);
             }
             if cfg.labels && labels_ok {
-                widgets::label(p, pos2(cell.center().x, ir.bottom() + 6.0 + (scale - 1.0) * ir.height() / 2.0), cfg.names.get(pkg).map(|s| s.as_str()).unwrap_or(&app.label), cfg, pal.home_text, cell.width() - 4.0, true, alpha);
+                widgets::label(p, pos2(cell.center().x, ir.bottom() + 6.0 + (scale - 1.0) * ir.height() / 2.0), cfg.names.get(pkg).map(|s| s.as_str()).unwrap_or(&app.label), cfg, pal.home_text, cell.width() - 4.0, cfg.label_shadow, alpha);
             }
         }
         Item::Folder { name, apps, .. } => {
@@ -1228,7 +1333,7 @@ fn paint_item<'a>(
             let list: Vec<&platform::App> = apps.iter().filter_map(|a| find(a)).collect();
             widgets::folder_icon(p, ir, &list, icons, cfg, pal, scale, rot);
             if cfg.labels && labels_ok {
-                widgets::label(p, pos2(cell.center().x, ir.bottom() + 6.0), name, cfg, pal.home_text, cell.width() - 4.0, true, alpha);
+                widgets::label(p, pos2(cell.center().x, ir.bottom() + 6.0), name, cfg, pal.home_text, cell.width() - 4.0, cfg.label_shadow, alpha);
             }
         }
         Item::Widget { kind, .. } => {
@@ -1249,3 +1354,118 @@ fn paint_remove_badge(p: &Painter, item: &Item, cell: Rect, icon_rect: &dyn Fn(R
 
 #[allow(dead_code)]
 fn _shape_unused(_: Shape, _: Sense) {}
+
+#[allow(clippy::too_many_arguments)]
+fn paint_library<'a>(
+    p: &Painter,
+    geo: &Geo,
+    groups: &[(String, Option<platform::Category>, Vec<String>)],
+    search: Rect,
+    cards_l: &[(Rect, Vec<Rect>)],
+    cfg: &crate::config::Config,
+    pal: &crate::theme::Palette,
+    icons: &mut crate::icons::Icons,
+    find: &Find<'a>,
+    badges: &std::collections::HashMap<String, u32>,
+) {
+    let screen = geo.screen;
+    p.rect_filled(screen, 0, Color32::from_black_alpha(70));
+    let p = p.with_clip_rect(Rect::from_min_max(pos2(screen.left(), geo.top), screen.max));
+    p.rect_filled(search, cr(22.0), Color32::from_white_alpha(46));
+    widgets::glyph_at(&p, search.left_center() + vec2(16.0, 0.0), Align2::LEFT_CENTER, ph::MAGNIFYING_GLASS, 18.0, Color32::from_white_alpha(190));
+    p.text(search.left_center() + vec2(44.0, 0.0), Align2::LEFT_CENTER, "App Library", fonts::body(cfg, 16.0, false), Color32::from_white_alpha(190));
+    for ((name, _cat, pkgs), (rect, slots)) in groups.iter().zip(cards_l.iter()) {
+        if rect.bottom() < geo.top || rect.top() > screen.bottom() {
+            continue;
+        }
+        p.rect_filled(*rect, cr(24.0), pal.folder_bg);
+        for s in 0..4usize {
+            let Some(pkg) = pkgs.get(s) else { break };
+            if s == 3 && pkgs.len() > 4 {
+                // the fourth slot becomes a small group of the rest
+                let slot = slots[3];
+                let mini = slot.width() * 0.46;
+                for (j, rest) in pkgs.iter().skip(3).take(4).enumerate() {
+                    let r = Rect::from_min_size(slot.min + vec2((j % 2) as f32 * (mini + slot.width() * 0.08), (j / 2) as f32 * (mini + slot.width() * 0.08)), vec2(mini, mini));
+                    if let Some(app) = find(rest) {
+                        widgets::app_icon(&p, r, app, icons, cfg, pal, 1.0, 0.0, 1.0);
+                    }
+                }
+                break;
+            }
+            if let Some(app) = find(pkg) {
+                widgets::app_icon(&p, slots[s], app, icons, cfg, pal, 1.0, 0.0, 1.0);
+                if let Some(c) = badges.get(pkg) {
+                    if cfg.badges != crate::config::Badges::Off {
+                        widgets::badge(&p, slots[s], *c, cfg, pal);
+                    }
+                }
+            }
+        }
+        widgets::label(&p, pos2(rect.center().x, rect.bottom() + 6.0), name, cfg, Color32::WHITE, rect.width(), true, 1.0);
+    }
+}
+
+/// Where a page is, how big, how visible, while it moves by `d` pages from the centre.
+fn page_effect(e: PageEffect, d: f32, w: f32) -> (f32, f32, f32) {
+    let a = d.abs().min(1.0);
+    match e {
+        PageEffect::Slide => (d * w, 1.0, 1.0),
+        PageEffect::Parallax => (if d < 0.0 { d * w * 0.7 } else { d * w }, 1.0 - 0.04 * a, 1.0 - 0.65 * a),
+        PageEffect::Zoom => (d * w * 0.55, 1.0 - 0.15 * a, 1.0 - a),
+        PageEffect::Fade => (d * w * 0.2, 1.0, (1.0 - a * 1.1).max(0.0)),
+        PageEffect::Stack => {
+            if d < 0.0 {
+                (d * w * 0.25, 1.0 - 0.08 * a, 1.0 - a)
+            } else {
+                (d * w, 1.0, 1.0)
+            }
+        }
+    }
+}
+
+/// Each item sways a little differently, so the edit mode looks alive.
+fn jiggle(t: f32, key: &str) -> f32 {
+    let phase = key.bytes().fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(b as u32)) as f32 * 0.37;
+    (t * 15.0 + phase).sin() * 0.03
+}
+
+/// A transformed, faded painting layer. Layers are areas so their stacking order is stable.
+fn layer(ctx: &Context, name: &str, idx: usize, screen: Rect, tf: egui::emath::TSTransform, alpha: f32, f: impl FnOnce(&Painter)) {
+    let id = egui::Id::new(("lumen-layer", name, idx));
+    ctx.set_transform_layer(egui::LayerId::new(egui::Order::Middle, id), tf);
+    egui::Area::new(id).order(egui::Order::Middle).fixed_pos(screen.min).constrain(false).interactable(false).show(ctx, |ui| {
+        ui.set_clip_rect(screen);
+        let mut p = ui.painter().clone();
+        p.set_opacity(alpha);
+        f(&p);
+    });
+}
+
+fn paint_dots(p: &Painter, geo: &Geo, cfg: &crate::config::Config, pal: &crate::theme::Palette, count: usize, page: f32) {
+    use crate::config::DotsStyle;
+    let y = geo.dots_y;
+    if cfg.dots_style == DotsStyle::Numbers {
+        let cur = (page.round() as usize + 1).min(count);
+        p.text(pos2(geo.screen.center().x, y), Align2::CENTER_CENTER, format!("{cur} / {count}"), fonts::mono(12.0, false), pal.home_text.gamma_multiply(0.8));
+        return;
+    }
+    let gap = if cfg.dots_style == DotsStyle::Bars { 20.0 } else { 14.0 };
+    for i in 0..count {
+        let x = geo.screen.center().x + (i as f32 - (count - 1) as f32 / 2.0) * gap;
+        let near = (1.0 - (page - i as f32).abs()).clamp(0.0, 1.0); // 1 when this page is the current one, in between while moving
+        let c = pos2(x, y);
+        let dim = pal.home_text.gamma_multiply(0.42 + 0.58 * near);
+        if cfg.app_library && i == count - 1 {
+            widgets::glyph_at(p, c, Align2::CENTER_CENTER, ph::SQUARES_FOUR, 10.0 + 2.0 * near, dim);
+        } else if cfg.dots_style == DotsStyle::Bars {
+            let w = 8.0 + 8.0 * near;
+            p.rect_filled(Rect::from_center_size(c, vec2(w, 3.0)), cr(1.5), if near > 0.5 && cfg.preset == Preset::Nothing { pal.accent } else { dim });
+        } else if cfg.preset == Preset::Nothing {
+            let sz = 4.0 + 3.0 * near;
+            p.rect_filled(Rect::from_center_size(c, vec2(sz, sz)), cr(sz / 2.0), if near > 0.5 { pal.accent } else { dim });
+        } else {
+            p.circle_filled(c, 3.0 + 0.8 * near, dim);
+        }
+    }
+}

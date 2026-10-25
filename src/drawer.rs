@@ -148,7 +148,7 @@ impl Lumen {
         let nothing = cfg.preset == Preset::Nothing;
         let pixel = cfg.preset == Preset::Pixel;
         let round = if nothing || pixel { 0 } else { 28 };
-        let sheet = if pixel { pal.sheet.gamma_multiply(0.95) } else { pal.sheet };
+        let sheet = pal.sheet.gamma_multiply(cfg.drawer_opacity);
 
         let mut launch: Option<String> = None;
         let mut web: Option<String> = None;
@@ -172,7 +172,7 @@ impl Lumen {
 
             // search pill at the bottom (Pixel, Nothing) or at the top (others)
             let bar_h = if pixel { 56.0 } else { 50.0 };
-            let at_bottom = pixel || nothing;
+            let at_bottom = match cfg.drawer_search { crate::config::SearchPos::Top => false, crate::config::SearchPos::Bottom => true, crate::config::SearchPos::Auto => pixel || nothing };
             let bar = if at_bottom { Rect::from_min_max(pos2(left + 4.0, bottom - bar_h), pos2(right - 4.0, bottom)) } else { Rect::from_min_size(pos2(left + 4.0, rect.top() + it.max(10.0) + 8.0), vec2(width - 8.0, bar_h)) };
             widgets::search_pill(&ui.painter().clone(), bar, "", &cfg, &pal, false);
             let field = Rect::from_min_max(pos2(bar.left() + 56.0, bar.top()), pos2(bar.right() - 56.0, bar.bottom()));
@@ -206,7 +206,7 @@ impl Lumen {
             let mut list_top = if at_bottom { rect.top() + it.max(10.0) + 8.0 } else { bar.bottom() + 12.0 };
             let list_bottom = if at_bottom { bar.top() - 10.0 } else { bottom };
             let searching = !self.query.trim().is_empty();
-            let scrub = !searching && (nothing || cfg.drawer == DrawerStyle::List);
+            let scrub = !searching && cfg.drawer_scrubber;
             if cfg.suggestions && !searching {
                 let sug: Vec<String> = self.suggested(cfg.drawer_cols.min(5)).into_iter().map(|a| a.pkg.clone()).collect();
                 if !sug.is_empty() {
@@ -233,7 +233,10 @@ impl Lumen {
 
             let body = Rect::from_min_max(pos2(left, list_top), pos2(right, list_bottom));
             let rows_data = if searching { Some(results(self, &self.query.clone())) } else { None };
-            let visible: Vec<usize> = if searching { vec![] } else { (0..self.apps.len()).filter(|&i| !cfg.hidden.contains(&self.apps[i].pkg)).collect() };
+            let mut visible: Vec<usize> = if searching { vec![] } else { (0..self.apps.len()).filter(|&i| !cfg.hidden.contains(&self.apps[i].pkg)).collect() };
+            if cfg.drawer_sort == crate::config::Sort::MostUsed {
+                visible.sort_by_key(|&i| std::cmp::Reverse(cfg.launches.get(&self.apps[i].pkg).copied().unwrap_or(0)));
+            }
 
             ui.scope_builder(UiBuilder::new().max_rect(body), |ui| {
                 ui.set_clip_rect(body);

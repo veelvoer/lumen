@@ -98,9 +98,6 @@ pub fn launcher_apps() -> Vec<App> {
                 let label = env.call_method(&ri, "loadLabel", "(Landroid/content/pm/PackageManager;)Ljava/lang/CharSequence;", &[JValue::Object(&pm)])?.l()?;
                 let label = env.call_method(&label, "toString", "()Ljava/lang/String;", &[])?.l()?;
                 let (pkg, cls, label) = (jstr(env, &pkg), jstr(env, &cls), jstr(env, &label));
-                if pkg == PACKAGE {
-                    return Ok(None);
-                }
                 let key = label.to_lowercase();
                 let category = Category::from_android(cat, &pkg);
                 Ok(Some(App { pkg, cls, label, key, category }))
@@ -254,6 +251,10 @@ pub fn insets() -> Insets {
 
 pub fn is_24h() -> bool {
     with(|env, act| env.call_static_method("android/text/format/DateFormat", "is24HourFormat", "(Landroid/content/Context;)Z", &[JValue::Object(act)])?.z()).unwrap_or(true)
+}
+
+pub fn now_ms() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
 }
 
 /// Unix time in milliseconds shifted to the local time zone.
@@ -602,4 +603,74 @@ pub fn is_dark() -> bool {
         Ok(ui & 0x30 == 0x20)
     })
     .unwrap_or(true)
+}
+
+pub fn tz_offset_ms() -> i64 {
+    with(|env, _| {
+        let now = env.call_static_method("java/lang/System", "currentTimeMillis", "()J", &[])?.j()?;
+        let tz = env.call_static_method("java/util/TimeZone", "getDefault", "()Ljava/util/TimeZone;", &[])?.l()?;
+        Ok(env.call_method(&tz, "getOffset", "(J)I", &[JValue::Long(now)])?.i()? as i64)
+    })
+    .unwrap_or(0)
+}
+
+pub fn set_blur(px: i32) {
+    with(|env, act| {
+        let cls = glue(env, act, "dev.voer.lumen.Glue")?;
+        env.call_static_method(&cls, "setBlur", "(Landroid/app/Activity;I)V", &[JValue::Object(act), JValue::Int(px)])?;
+        Ok(())
+    });
+}
+
+pub fn set_system_bars(hide_status: bool, hide_nav: bool) {
+    with(|env, act| {
+        let cls = glue(env, act, "dev.voer.lumen.Glue")?;
+        env.call_static_method(&cls, "bars", "(Landroid/app/Activity;ZZ)V", &[JValue::Object(act), JValue::Bool(hide_status as u8), JValue::Bool(hide_nav as u8)])?;
+        Ok(())
+    });
+}
+
+pub fn set_rotation(free: bool) {
+    with(|env, act| {
+        let cls = glue(env, act, "dev.voer.lumen.Glue")?;
+        env.call_static_method(&cls, "rotate", "(Landroid/app/Activity;Z)V", &[JValue::Object(act), JValue::Bool(free as u8)])?;
+        Ok(())
+    });
+}
+
+/// True once after Lumen was opened from an app icon: that always opens the settings.
+pub fn take_settings_requested() -> bool {
+    with(|env, act| {
+        let cls = glue(env, act, "dev.voer.lumen.Glue")?;
+        env.call_static_method(&cls, "takeSettings", "()Z", &[])?.z()
+    })
+    .unwrap_or(false)
+}
+
+/// Starts an app with the system zoom (or reveal) animation coming out of the icon. `rect` is in physical pixels.
+pub fn launch_from(a: &App, rect: [i32; 4], reveal: bool) {
+    with(|env, act| {
+        let main = env.new_string("android.intent.action.MAIN")?;
+        let cat = env.new_string("android.intent.category.LAUNCHER")?;
+        let intent = env.new_object("android/content/Intent", "(Ljava/lang/String;)V", &[JValue::Object(&main)])?;
+        env.call_method(&intent, "addCategory", "(Ljava/lang/String;)Landroid/content/Intent;", &[JValue::Object(&cat)])?;
+        let (p, c) = (env.new_string(&a.pkg)?, env.new_string(&a.cls)?);
+        let cn = env.new_object("android/content/ComponentName", "(Ljava/lang/String;Ljava/lang/String;)V", &[JValue::Object(&p), JValue::Object(&c)])?;
+        env.call_method(&intent, "setComponent", "(Landroid/content/ComponentName;)Landroid/content/Intent;", &[JValue::Object(&cn)])?;
+        env.call_method(&intent, "addFlags", "(I)Landroid/content/Intent;", &[JValue::Int(0x10000000 | 0x00200000)])?;
+        let win = env.call_method(act, "getWindow", "()Landroid/view/Window;", &[])?.l()?;
+        let view = env.call_method(&win, "getDecorView", "()Landroid/view/View;", &[])?.l()?;
+        let opts = if reveal {
+            env.call_static_method("android/app/ActivityOptions", "makeClipRevealAnimation", "(Landroid/view/View;IIII)Landroid/app/ActivityOptions;", &[JValue::Object(&view), JValue::Int(rect[0]), JValue::Int(rect[1]), JValue::Int(rect[2]), JValue::Int(rect[3])])?.l()?
+        } else {
+            env.call_static_method("android/app/ActivityOptions", "makeScaleUpAnimation", "(Landroid/view/View;IIII)Landroid/app/ActivityOptions;", &[JValue::Object(&view), JValue::Int(rect[0]), JValue::Int(rect[1]), JValue::Int(rect[2]), JValue::Int(rect[3])])?.l()?
+        };
+        let bundle = env.call_method(&opts, "toBundle", "()Landroid/os/Bundle;", &[])?.l()?;
+        env.call_method(act, "startActivity", "(Landroid/content/Intent;Landroid/os/Bundle;)V", &[JValue::Object(&intent), JValue::Object(&bundle)])?;
+        Ok(())
+    })
+    .or_else(|| {
+        launch(a);
+        Some(())
+    });
 }

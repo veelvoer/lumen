@@ -42,8 +42,8 @@ pub fn paint(p: &Painter, rect: Rect, kind: WidgetKind, cfg: &Config, pal: &Pale
         WidgetKind::DotClock => {
             // Nothing: a black card with the time in dots, the date in mono caps
             let card = rect.shrink2(vec2(4.0, 2.0));
-            p.rect_filled(card, cr(30.0), Color32::from_rgba_unmultiplied(0, 0, 0, if pal.light { 235 } else { 215 }));
-            p.rect_stroke(card, cr(30.0), Stroke::new(1.0, Color32::from_white_alpha(22)), StrokeKind::Inside);
+            p.rect_filled(card, cr(cfg.widget_radius), Color32::from_rgba_unmultiplied(0, 0, 0, if pal.light { 235 } else { 215 }));
+            p.rect_stroke(card, cr(cfg.widget_radius), Stroke::new(1.0, Color32::from_white_alpha(22)), StrokeKind::Inside);
             let time = c.time();
             let dot = ((card.width() - 56.0) / 30.0).min((card.height() - 90.0) / 7.0).min(13.0);
             let w = dot_text_width(&time, dot);
@@ -55,8 +55,8 @@ pub fn paint(p: &Painter, rect: Rect, kind: WidgetKind, cfg: &Config, pal: &Pale
         }
         WidgetKind::DotDate => {
             let card = rect.shrink2(vec2(4.0, 2.0));
-            p.rect_filled(card, cr(30.0), Color32::from_rgba_unmultiplied(0, 0, 0, 215));
-            p.rect_stroke(card, cr(30.0), Stroke::new(1.0, Color32::from_white_alpha(22)), StrokeKind::Inside);
+            p.rect_filled(card, cr(cfg.widget_radius), Color32::from_rgba_unmultiplied(0, 0, 0, 215));
+            p.rect_stroke(card, cr(cfg.widget_radius), Stroke::new(1.0, Color32::from_white_alpha(22)), StrokeKind::Inside);
             let day = format!("{:02}", c.day);
             let dot = ((card.width() - 40.0) / 11.5).min(10.0);
             let w = dot_text_width(&day, dot);
@@ -65,8 +65,8 @@ pub fn paint(p: &Painter, rect: Rect, kind: WidgetKind, cfg: &Config, pal: &Pale
         }
         WidgetKind::DotBattery => {
             let card = rect.shrink2(vec2(4.0, 2.0));
-            p.rect_filled(card, cr(30.0), Color32::from_rgba_unmultiplied(0, 0, 0, 215));
-            p.rect_stroke(card, cr(30.0), Stroke::new(1.0, Color32::from_white_alpha(22)), StrokeKind::Inside);
+            p.rect_filled(card, cr(cfg.widget_radius), Color32::from_rgba_unmultiplied(0, 0, 0, 215));
+            p.rect_stroke(card, cr(cfg.widget_radius), Stroke::new(1.0, Color32::from_white_alpha(22)), StrokeKind::Inside);
             let t = format!("{}%", live.battery.level);
             let dot = ((card.width() - 36.0) / (dot_text_width(&t, 1.0))).min(8.0);
             let w = dot_text_width(&t, dot);
@@ -82,7 +82,7 @@ pub fn paint(p: &Painter, rect: Rect, kind: WidgetKind, cfg: &Config, pal: &Pale
             let card = r;
             let ios = cfg.preset == Preset::Ios;
             let bg = if pal.light { Color32::from_rgba_unmultiplied(255, 255, 255, 235) } else { Color32::from_rgba_unmultiplied(30, 30, 32, 225) };
-            p.rect_filled(card, cr(if ios { 22.0 } else { 28.0 }), bg);
+            p.rect_filled(card, cr(cfg.widget_radius), bg);
             let red = Color32::from_rgb(255, 69, 58);
             p.text(pos2(card.left() + 16.0, card.top() + 14.0), Align2::LEFT_TOP, c.weekday_full().to_uppercase(), fonts::body(cfg, 13.0 * fs, true), if ios { red } else { pal.accent });
             p.text(pos2(card.left() + 14.0, card.top() + 26.0), Align2::LEFT_TOP, c.day.to_string(), fonts::body(cfg, 62.0 * fs, false), if pal.light { Color32::BLACK } else { Color32::WHITE });
@@ -91,7 +91,7 @@ pub fn paint(p: &Painter, rect: Rect, kind: WidgetKind, cfg: &Config, pal: &Pale
         WidgetKind::Battery => {
             let card = r;
             let bg = if pal.light { Color32::from_rgba_unmultiplied(255, 255, 255, 235) } else { Color32::from_rgba_unmultiplied(30, 30, 32, 225) };
-            p.rect_filled(card, cr(22.0), bg);
+            p.rect_filled(card, cr(cfg.widget_radius), bg);
             let center = card.center() - vec2(0.0, 6.0);
             let rad = card.height().min(card.width()) * 0.3;
             p.circle_stroke(center, rad, Stroke::new(8.0, Color32::from_gray(if pal.light { 225 } else { 62 })));
@@ -115,7 +115,7 @@ pub fn paint(p: &Painter, rect: Rect, kind: WidgetKind, cfg: &Config, pal: &Pale
 fn analog(p: &Painter, r: Rect, cfg: &Config, pal: &Palette, c: &ClockInfo) {
     let ios = cfg.preset == Preset::Ios;
     let bg = if ios { Color32::from_rgba_unmultiplied(20, 20, 22, 235) } else { pal.card };
-    p.rect_filled(r, cr(if ios { 22.0 } else { 28.0 }), bg);
+    p.rect_filled(r, cr(cfg.widget_radius), bg);
     let ctr = r.center();
     let rad = r.width().min(r.height()) * 0.42;
     let fg = if ios { Color32::WHITE } else { pal.text };

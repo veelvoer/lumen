@@ -1,5 +1,7 @@
 //! The launcher: state, per-frame bookkeeping and the actions the UI can trigger.
 
+use crate::anim::{self, Feel, Spring, Spring2};
+use crate::bridge::{Bridge, Snapshot};
 use crate::clock::ClockInfo;
 use crate::config::{Action, Config, Item, Preset, Search};
 use crate::icons::{self, Icons};
@@ -78,6 +80,7 @@ pub enum Hit {
     Search,
     EditDone,
     EditAdd,
+    EditSettings,
     EditRemove(String),
 }
 
@@ -115,6 +118,7 @@ pub struct Lumen {
     pub version: String,
     pub screen: Screen,
     pub settings_stack: Vec<crate::settings::SettingsPage>,
+    pub settings_view: Vec<crate::settings::SettingsPage>,
     pub dirty: bool,
     pub default_home: bool,
 
@@ -124,7 +128,19 @@ pub struct Lumen {
     pub drawer: f32,
     pub drawer_open: bool,
     pub touch: Touch,
-    pub anim: HashMap<String, Pos2>,
+    pub item_sp: HashMap<String, Spring2>,
+    pub scale_sp: HashMap<String, Spring>,
+    pub page_v: f32,
+    pub drawer_v: f32,
+    pub folder_v: f32,
+    pub folder_origin: Option<Rect>,
+    pub menu_t: Spring,
+    pub screen_t: Spring,
+    pub depth: Spring,
+    pub feel: Feel,
+    pub bridge: Bridge,
+    pub press_key: Option<String>,
+    pub vel_smooth: egui::Vec2,
     pub edit: bool,
     pub open_folder: Option<u32>,
     pub open_category: Option<Category>,
@@ -144,16 +160,13 @@ pub struct Lumen {
 
     // phone state, refreshed now and then
     pub insets: Insets,
-    insets_at: Instant,
     pub clock: ClockInfo,
-    clock_at: Option<Instant>,
     pub battery: Battery,
-    battery_at: Option<Instant>,
     pub badges: HashMap<String, u32>,
-    badges_at: Option<Instant>,
     was_focused: bool,
-    home_poll_at: Instant,
     last_offset: f32,
+    last_blur: i32,
+    last_bars: (bool, bool, bool),
     style_key: Option<String>,
 }
 
@@ -162,6 +175,7 @@ impl Lumen {
         let cfg = Config::load(&dir);
         let phone_colors = platform::dynamic_colors();
         let system_dark = platform::is_dark();
+        let _ = (&cfg.mode, 0);
         let pal = theme::palette(&cfg, cfg.dark(system_dark), phone_colors);
         let mut l = Lumen {
             pal,
@@ -176,6 +190,7 @@ impl Lumen {
             version: platform::version_name(),
             screen: Screen::Home,
             settings_stack: vec![],
+            settings_view: vec![],
             dirty: false,
             default_home: platform::is_default_home(),
             page: 0.0,
@@ -183,7 +198,19 @@ impl Lumen {
             drawer: 0.0,
             drawer_open: false,
             touch: Touch::Idle,
-            anim: HashMap::new(),
+            item_sp: HashMap::new(),
+            scale_sp: HashMap::new(),
+            page_v: 0.0,
+            drawer_v: 0.0,
+            folder_v: 0.0,
+            folder_origin: None,
+            menu_t: Spring::at(0.0),
+            screen_t: Spring::at(0.0),
+            depth: Spring::at(0.0),
+            feel: anim::feel(&cfg),
+            bridge: Bridge::new(ctx),
+            press_key: None,
+            vel_smooth: egui::Vec2::ZERO,
             edit: false,
             open_folder: None,
             open_category: None,
@@ -200,16 +227,13 @@ impl Lumen {
             suppress_click: 0.0,
             drawer_scroll_to: None,
             insets: Insets::default(),
-            insets_at: Instant::now() - Duration::from_secs(10),
             clock: ClockInfo::default(),
-            clock_at: None,
             battery: Battery { level: 100, charging: false },
-            battery_at: None,
             badges: HashMap::new(),
-            badges_at: None,
             was_focused: true,
-            home_poll_at: Instant::now(),
             last_offset: -1.0,
+            last_blur: -1,
+            last_bars: (false, false, false),
             style_key: None,
             cfg,
         };
@@ -246,6 +270,7 @@ impl Lumen {
             }
         }
         platform::set_light_bars(self.pal.light);
+        self.feel = anim::feel(&self.cfg);
     }
 
     // ───────────────────────────── per-frame upkeep ─────────────────────────────
@@ -260,46 +285,52 @@ impl Lumen {
             self.apps = list;
             if !self.cfg.seeded {
                 self.seed();
+            } else {
+                // apps that appeared since last time
+                let fresh: Vec<String> = self.apps.iter().filter(|x| !self.cfg.known.contains(&x.pkg) && x.pkg != platform::PACKAGE).map(|x| x.pkg.clone()).collect();
+                if !self.cfg.known.is_empty() && self.cfg.auto_add {
+                    for pkg in &fresh {
+                        self.cfg.insert_auto(Item::App(pkg.clone()));
+                    }
+                }
             }
+            self.cfg.known = self.apps.iter().map(|x| x.pkg.clone()).collect();
             let known: std::collections::HashSet<&str> = self.apps.iter().map(|a| a.pkg.as_str()).collect();
             self.cfg.tidy(&|p| known.contains(p));
             self.dirty = true;
             ctx.request_repaint();
         }
-        if self.insets_at.elapsed() > Duration::from_millis(700) {
-            self.insets = platform::insets();
-            self.insets_at = Instant::now();
+        // everything the phone tells us arrives from the background worker; nothing here can stall a frame
+        let snap: Snapshot = self.bridge.snapshot();
+        self.insets = snap.insets;
+        self.clock = ClockInfo::now(snap.tz_offset_ms, match self.cfg.time_format {
+            crate::config::TimeFormat::Phone => snap.h24,
+            crate::config::TimeFormat::H24 => true,
+            crate::config::TimeFormat::H12 => false,
+        });
+        if let Some(b) = snap.battery {
+            self.battery = b;
         }
-        if self.clock_at.is_none_or(|t| t.elapsed() > Duration::from_millis(500)) {
-            self.clock = ClockInfo::now();
-            self.clock_at = Some(Instant::now());
+        if self.cfg.badges != crate::config::Badges::Off {
+            self.badges = snap.badges.clone();
         }
-        if self.battery_at.is_none_or(|t| t.elapsed() > Duration::from_secs(30)) {
-            self.battery = platform::battery();
-            self.battery_at = Some(Instant::now());
-        }
-        if self.cfg.badges != crate::config::Badges::Off && self.badges_at.is_none_or(|t| t.elapsed() > Duration::from_secs(3)) {
-            self.badges = platform::badges();
-            self.badges_at = Some(Instant::now());
+        if snap.dark != self.system_dark && snap.battery.is_some() {
+            self.system_dark = snap.dark;
+            self.restyle(ctx);
         }
 
         let focused = ctx.input(|i| i.focused);
         if focused && !self.was_focused {
             self.apps_rx = spawn_app_scan(ctx);
             self.default_home = platform::is_default_home();
-            let dark = platform::is_dark();
-            if dark != self.system_dark {
-                self.system_dark = dark;
-                self.restyle(ctx);
-            }
         }
         self.was_focused = focused;
 
-        if self.home_poll_at.elapsed() > Duration::from_millis(150) {
-            self.home_poll_at = Instant::now();
-            if platform::take_home_pressed() {
-                self.go_home(ctx);
-            }
+        if self.bridge.take_home() {
+            self.go_home(ctx);
+        }
+        if self.bridge.take_settings() {
+            self.open_settings();
         }
 
         let back = ctx.input(|i| i.key_pressed(egui::Key::BrowserBack) || i.key_pressed(egui::Key::Escape));
@@ -307,19 +338,28 @@ impl Lumen {
             self.back(ctx);
         }
 
-        // keep the wallpaper in step with the pages
+        // keep the wallpaper in step with the pages, and frost it behind drawers and folders
         if self.cfg.wallpaper_scroll && self.screen == Screen::Home {
             let n = self.page_count().max(2) as f32 - 1.0;
             let off = (self.page / n).clamp(0.0, 1.0);
             if (off - self.last_offset).abs() > 0.004 {
                 self.last_offset = off;
-                platform::set_wallpaper_offset(off);
+                self.bridge.wallpaper_offset(off);
             }
         }
-
-        let key = format!("{:?}{:?}{:?}", self.cfg.preset, self.cfg.mode, self.system_dark);
-        if self.style_key.as_deref() != Some(&key) {
-            self.style_key = Some(key);
+        let k = ctx.pixels_per_point();
+        let lib_amount = if self.cfg.app_library { (self.page - (self.cfg.pages.len() as f32 - 1.0)).clamp(0.0, 1.0) } else { 0.0 };
+        let amount = self.drawer.clamp(0.0, 1.0).max(self.folder_t.clamp(0.0, 1.0) * 0.7).max(lib_amount * 0.8).max(if self.screen == Screen::Settings { self.screen_t.x.clamp(0.0, 1.0) } else { 0.0 });
+        let px = ((amount * self.cfg.blur * 28.0 * k) / 4.0).round() as i32 * 4;
+        if px != self.last_blur {
+            self.last_blur = px;
+            self.bridge.blur(px);
+        }
+        let bars = (self.cfg.hide_status_bar, self.cfg.hide_nav_bar, self.cfg.rotate);
+        if bars != self.last_bars {
+            self.last_bars = bars;
+            self.bridge.bars(bars.0, bars.1);
+            self.bridge.rotate(bars.2);
         }
     }
 
@@ -443,8 +483,27 @@ impl Lumen {
     // ───────────────────────────── actions ─────────────────────────────
 
     pub fn launch(&mut self, ctx: &Context, pkg: &str) {
+        self.launch_at(ctx, pkg, None);
+    }
+
+    /// Starts an app. With the icon's rectangle (in points) the system zooms out of the icon.
+    pub fn launch_at(&mut self, ctx: &Context, pkg: &str, from: Option<Rect>) {
+        if pkg == platform::PACKAGE {
+            self.open_settings();
+            self.close_drawer(ctx);
+            self.search_open = false;
+            self.menu = None;
+            return;
+        }
         if let Some(a) = self.app(pkg) {
-            platform::launch(a);
+            let k = ctx.pixels_per_point();
+            match (from, self.cfg.launch_anim) {
+                (Some(r), crate::config::LaunchAnim::Zoom | crate::config::LaunchAnim::Reveal) => {
+                    let reveal = self.cfg.launch_anim == crate::config::LaunchAnim::Reveal;
+                    platform::launch_from(a, [(r.left() * k) as i32, (r.top() * k) as i32, (r.width() * k) as i32, (r.height() * k) as i32], reveal);
+                }
+                _ => platform::launch(a),
+            }
             *self.cfg.launches.entry(pkg.to_string()).or_default() += 1;
             self.dirty = true;
         }
@@ -454,7 +513,6 @@ impl Lumen {
         self.search_open = false;
         self.query.clear();
         self.close_drawer(ctx);
-        self.drawer = 0.0;
     }
 
     pub fn run_action(&mut self, ctx: &Context, a: Action) {
@@ -472,6 +530,10 @@ impl Lumen {
             }
             Action::Settings => self.open_settings(),
             Action::Edit => self.edit = true,
+            Action::Menu => {
+                let c = ctx.content_rect().center();
+                self.menu = Some(Menu { target: Target::Home, anchor: Rect::from_center_size(c, egui::vec2(10.0, 10.0)) });
+            }
         }
     }
 
@@ -495,7 +557,9 @@ impl Lumen {
     }
 
     pub fn haptic(&self, h: Haptic) {
-        platform::haptic(h);
+        if self.cfg.haptics {
+            self.bridge.haptic(h);
+        }
     }
 
     /// Apps by how often they were launched, then name. Used for suggestions.
@@ -525,9 +589,18 @@ impl Lumen {
     pub fn frame(&mut self, root: &mut egui::Ui) {
         let ctx = root.ctx().clone();
         self.tick(&ctx);
-        match self.screen {
-            Screen::Home => self.home(root, &ctx),
-            Screen::Settings => crate::settings::show(self, root),
+        let dt = ctx.input(|i| i.stable_dt).clamp(0.001, 0.05);
+        self.screen_t.target = if self.screen == Screen::Settings { 1.0 } else { 0.0 };
+        let mut busy = self.screen_t.step(dt, self.feel.screen);
+        busy |= self.depth.step(dt, self.feel.screen);
+        if busy {
+            ctx.request_repaint();
+        }
+        if self.screen_t.x < 0.999 || self.screen == Screen::Home {
+            self.home(root, &ctx);
+        }
+        if self.screen == Screen::Settings || self.screen_t.x > 0.002 {
+            crate::settings::show(self, root);
         }
         self.save_if_dirty();
     }

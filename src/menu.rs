@@ -106,7 +106,7 @@ impl Lumen {
             close = true;
         }
 
-        let width = if ios { 250.0 } else if nothing { 214.0 } else { 232.0 };
+        let width = if ios { 276.0 } else if nothing { 236.0 } else { 248.0 };
         let row_h = if ios { 46.0 } else if nothing { 44.0 } else { 50.0 };
         let height = items.len() as f32 * row_h + 12.0;
         let a = menu.anchor;

@@ -46,7 +46,9 @@ mod entry {
             // a bug must never take the home screen down with it: skip the frame, reset what was in flight
             let l = &mut self.0;
             if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| l.frame(ui))).is_err() {
-                l.recover();
+                l.recover(ui.ctx());
+            } else {
+                l.panics = 0;
             }
         }
     }

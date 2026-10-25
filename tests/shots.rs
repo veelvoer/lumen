@@ -381,3 +381,39 @@ fn filmstrips() {
     lumen(&mut h).drawer_open = false;
     strip(&mut h, "pixel-drawer-close", 16, 22);
 }
+
+#[test]
+fn filmstrips_more() {
+    // long-press menu
+    let mut h = make(Preset::Ios, |_| {});
+    touch_down(&h, Pos2::new(60.0, 285.0));
+    strip(&mut h, "ios-menu-open", 24, 30);
+    touch_up(&h, Pos2::new(60.0, 285.0));
+    lumen(&mut h).menu = None;
+    strip(&mut h, "ios-menu-close", 16, 22);
+    // widget picker
+    let mut h = make(Preset::Pixel, |_| {});
+    lumen(&mut h).widget_picker = true;
+    strip(&mut h, "pixel-widgets-open", 16, 22);
+    lumen(&mut h).widget_picker = false;
+    strip(&mut h, "pixel-widgets-close", 16, 22);
+    // settings in and out
+    let mut h = make(Preset::Ios, |_| {});
+    lumen(&mut h).open_settings();
+    strip(&mut h, "ios-settings-open", 16, 22);
+    { let ctx = h.ctx.clone(); lumen(&mut h).go_home(&ctx); }
+    strip(&mut h, "ios-settings-close", 16, 22);
+}
+
+#[test]
+fn recovers_after_a_frame_panic() {
+    let mut h = make(Preset::Ios, |_| {});
+    // what a panic in the middle of painting leaves behind
+    lumen(&mut h).icons = None;
+    let ctx = h.ctx.clone();
+    lumen(&mut h).recover(&ctx);
+    settle(&mut h);
+    let l = lumen(&mut h);
+    assert!(l.icons.is_some(), "the icon atlas must be rebuilt");
+    shot(&mut h, "after-recover");
+}

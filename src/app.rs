@@ -168,6 +168,11 @@ pub struct Lumen {
     /// 1 right after coming back from an app, then eases to 0: the home screen settles in
     pub resume_t: Spring,
     pub jig_t: f32,
+    /// frames in a row that ended in a panic
+    pub panics: u32,
+    /// when Lumen last came to the front, and the refresh cap the governor chose this session
+    focus_t: f64,
+    auto_cap: f32,
     pub pager_start: f32,
     /// frames in motion and slow ones, over the current window (refresh-rate governor)
     win: (u32, u32),
@@ -260,7 +265,9 @@ pub struct Lumen {
 
 impl Lumen {
     pub fn new(ctx: &Context, dir: String) -> Lumen {
-        let cfg = Config::load(&dir);
+        let mut cfg = Config::load(&dir);
+        // what was learned from slow frames last time may have been the system's app animations, not Lumen: start fresh
+        cfg.light_learned = false;
         platform::set_refresh_cap(cfg.refresh_cap);
         let phone_colors = platform::dynamic_colors();
         let system_dark = platform::is_dark();
@@ -283,6 +290,9 @@ impl Lumen {
             last_scan: std::time::Instant::now(),
             resume_t: Spring::at(0.0),
             jig_t: 0.0,
+            panics: 0,
+            focus_t: 0.0,
+            auto_cap: 0.0,
             pager_start: 0.0,
             win: (0, 0),
             edit_t: Spring::at(0.0),
@@ -573,6 +583,7 @@ impl Lumen {
 
         let focused = ctx.input(|i| i.focused);
         if focused && !self.was_focused {
+            self.focus_t = ctx.input(|i| i.time);
             // coming back from an app: look for installed or removed apps, but not more than every 30 seconds and without hurry
             if !self.scan_pending && self.last_scan.elapsed() > std::time::Duration::from_secs(30) {
                 self.scan_pending = true;
@@ -944,8 +955,10 @@ impl Lumen {
     fn log_frame_times(&mut self, ctx: &Context) {
         let dt = ctx.input(|i| i.unstable_dt);
         self.perf.frame(dt, self.frame_budget);
+        // the first seconds after coming back from an app are the system's animation, not ours to judge
+        let calm = ctx.input(|i| i.time) - self.focus_t > 3.0;
         // Refresh-rate governor: a steady 90 Hz looks smoother than a 120 Hz that misses every tenth frame.
-        if dt > 0.0 && dt < 0.2 {
+        if calm && dt > 0.0 && dt < 0.2 {
             self.win.0 += 1;
             // a long stall (an app starting, a page loading) is not the refresh rate's fault: only near misses count
             if dt > self.frame_budget * 1.35 && dt < self.frame_budget * 4.0 {
@@ -955,16 +968,16 @@ impl Lumen {
                 let hz = 1.0 / self.frame_budget.max(0.001);
                 if self.win.1 * 100 / self.win.0 >= 10 && hz > 80.0 && self.cfg.refresh_cap != 120.0 {
                     let cap = if hz > 100.0 { 90.0 } else { 60.0 };
-                    self.cfg.refresh_cap = cap;
-                    self.dirty = true;
-                    platform::set_refresh_cap(cap);
+                    // only for this session: a bad moment must not lower the screen for good
+                    self.auto_cap = cap;
+                    platform::set_refresh_cap(if self.cfg.refresh_cap > 0.0 { self.cfg.refresh_cap.min(cap) } else { cap });
                     self.bridge.high_refresh(!self.light);
                 }
                 self.win = (0, 0);
             }
         }
         // the phone cannot keep up: lighten up on our own, and remember it
-        if self.cfg.perf_mode == crate::config::PerfMode::Auto && !self.light && self.perf.slow_run >= 45 {
+        if calm && self.cfg.perf_mode == crate::config::PerfMode::Auto && !self.light && self.perf.slow_run >= 90 {
             self.cfg.light_learned = true;
             self.dirty = true;
             self.update_light();
@@ -974,13 +987,39 @@ impl Lumen {
     }
 
     /// After a panic in a frame: drop whatever gesture or popup was in flight so the next frame starts clean.
-    pub fn recover(&mut self) {
+    pub fn recover(&mut self, ctx: &Context) {
         log::error!("recovered from a panic in a frame");
         self.touch = Touch::Idle;
         self.menu = None;
         self.dialog = None;
         self.edit = false;
         self.press_key = None;
+        self.panics += 1;
+        // painting the home screen takes the icon atlas, the app list and the springs out of `self` for the frame;
+        // a panic in the middle would leave them empty for good (and every next frame would fail the same way)
+        if self.icons.is_none() {
+            let px = icons::px_for(self.cfg.icon_size.max(self.cfg.dock_icon_size), ctx.pixels_per_point());
+            let style = icons::Style { shape: self.cfg.shape, radius: self.cfg.icon_radius, mono: self.cfg.themed_icons, px: if self.light { px.min(112) } else { px } };
+            self.icons = Some(Icons::new(ctx, style, self.dir.clone(), !self.device.low_ram));
+        }
+        if self.apps.is_empty() {
+            self.apps_rx = spawn_app_scan(ctx);
+            self.scan_pending = true;
+        }
+        if self.panics >= 3 {
+            // the same frame keeps failing: leave every overlay and animation that could be the cause
+            self.screen = Screen::Home;
+            self.drawer_open = false;
+            self.search_open = false;
+            self.widget_picker = false;
+            self.open_folder = None;
+            self.open_category = None;
+            self.resize = None;
+            self.ghosts.clear();
+            self.item_sp.clear();
+            self.scale_sp.clear();
+        }
+        ctx.request_repaint();
     }
 
     /// A plain-text report about this phone and this launcher, for bug reports.

@@ -510,8 +510,8 @@ fn look_page(ui: &mut Ui, l: &mut Lumen, c: &mut Ctl) {
         label(ui, c, "Accent color");
         swatches(ui, c, &mut l.cfg.accent);
     }
-    section(ui, c, "Liquid Glass (iOS style)");
-    switch_row(ui, c, "Real Liquid Glass", "Glass that bends and blurs your actual wallpaper", &mut l.cfg.real_glass);
+    section(ui, c, "Frosted glass (iOS style)");
+    switch_row(ui, c, "Frosted glass", "Dock and search blur your actual wallpaper", &mut l.cfg.real_glass);
     if l.cfg.real_glass {
         if l.wallpaper_live {
             note(ui, c, "Not available with a live wallpaper. Pick a normal picture to see it.");

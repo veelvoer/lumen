@@ -1115,8 +1115,22 @@ impl Lumen {
             }
             Touch::Pager => {
                 let max = (count - 1) as f32;
-                let rubber = if self.page < 0.0 || self.page > max { 0.35 } else { 1.0 };
-                self.page -= delta.x / w * rubber;
+                // iOS rubber band, in page widths: shown = 1 - 1 / (0.55 * x + 1), x = how far the finger went past the end
+                let step = -delta.x / w;
+                let (bound, over) = if self.page < 0.0 { (0.0, -self.page) } else if self.page > max { (max, self.page - max) } else { (if step < 0.0 { 0.0 } else { max }, 0.0) };
+                let sign = if bound == 0.0 { -1.0 } else { 1.0 };
+                let at_end = (self.page <= 0.0 && step < 0.0) || (self.page >= max && step > 0.0) || over > 0.0;
+                if at_end {
+                    let x = (over.min(0.98) / (1.0 - over.min(0.98))) / 0.55 + step * sign;
+                    if x > 0.0 {
+                        self.page = bound + sign * (1.0 - 1.0 / (0.55 * x + 1.0));
+                    } else {
+                        // back inside: what is left of the movement scrolls normally
+                        self.page = bound - sign * (-x).min(step.abs());
+                    }
+                } else {
+                    self.page += step;
+                }
                 if !down {
                     // carry the finger's speed into the spring so the page keeps moving the way it was flicked
                     let v = -vel.x / w;
@@ -1136,6 +1150,7 @@ impl Lumen {
             }
             Touch::LibraryScroll => {
                 let max = self.lib_max;
+                self.lib_scroller.view = geo.screen.height();
                 self.lib_scroller.drag_by(delta.y, max);
                 if !down {
                     self.lib_scroller.release(-vel.y);

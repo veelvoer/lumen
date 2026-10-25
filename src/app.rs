@@ -696,7 +696,7 @@ impl Lumen {
         let count = self.page_count().max(2) as f32 - 1.0;
         let pan = if self.cfg.wallpaper_scroll { (self.page / count).clamp(0.0, 1.0) } else { 0.5 };
         let dark = self.dark();
-        let tint = if dark { egui::Color32::from_rgba_unmultiplied(20, 20, 30, 20) } else { egui::Color32::from_rgba_unmultiplied(255, 255, 255, 34) };
+        let tint = if dark { egui::Color32::from_rgba_unmultiplied(255, 255, 255, 26) } else { egui::Color32::from_rgba_unmultiplied(255, 255, 255, 64) };
         if self.cfg.dock == crate::config::DockStyle::Glass {
             self.glass.bake(ctx, "dock", geo.dock, self.cfg.dock_radius, geo.screen, pan, tint, dark);
         }

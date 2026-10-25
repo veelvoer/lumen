@@ -28,6 +28,8 @@ pub struct Scroller {
     /// lists made of egui widgets cannot draw past their ends: no bounce there
     pub hard_ends: bool,
     pub holding_now: bool,
+    /// height of the scrolling view, the `d` of the rubber band
+    pub view: f32,
     start: f32,
     start_x: f32,
     last: f32,
@@ -55,13 +57,38 @@ impl Scroller {
         *self = Scroller::default();
     }
 
-    /// The finger moved by `dy` points (positive = down). Past either end the content gives, but resists.
+    /// The finger moved by `dy` points (positive = down). Past either end the content gives like UIScrollView's
+    /// rubber band: shown = (1 - 1 / (c * x / d + 1)) * d, x being how far the finger went past the end and d the
+    /// size of the view, c = 0.55. The finger is followed in x, so reversing retraces the same curve.
     pub fn drag_by(&mut self, dy: f32, max: f32) {
-        let over = if self.offset < 0.0 { -self.offset } else if self.offset > max { self.offset - max } else { 0.0 };
-        let moving_out = (self.offset <= 0.0 && dy > 0.0) || (self.offset >= max && dy < 0.0);
-        let k = if moving_out { 0.55 / (1.0 + over / 90.0) } else { 1.0 };
-        self.offset -= dy * k;
+        const C: f32 = 0.55;
+        let d = self.view.max(200.0);
+        let shown = |x: f32| (1.0 - 1.0 / (C * x / d + 1.0)) * d;
+        let raw = |over: f32| d / C * (over / (d - over).max(1.0));
+        let (top, bottom) = (self.offset < 0.0 || (self.offset <= 0.0 && dy > 0.0), self.offset > max || (self.offset >= max && dy < 0.0));
         self.vel = 0.0;
+        if !top && !bottom {
+            self.offset -= dy;
+            // a drag may carry the content across an end within one frame
+            if self.offset < 0.0 {
+                let x = -self.offset;
+                self.offset = -shown(x);
+            } else if self.offset > max {
+                let x = self.offset - max;
+                self.offset = max + shown(x);
+            }
+            return;
+        }
+        let (over, outward, move_in) = if top { (-self.offset.min(0.0), dy > 0.0, -dy) } else { ((self.offset - max).max(0.0), dy < 0.0, dy) };
+        let x = raw(over.min(d - 1.0)) + if outward { dy.abs() } else { -dy.abs() };
+        if x > 0.0 {
+            let o = shown(x);
+            self.offset = if top { -o } else { max + o };
+        } else {
+            // back inside: the rest of the movement scrolls normally
+            let rest = -x;
+            self.offset = if top { rest.max(0.0).min(move_in.abs()) } else { max - rest.max(0.0).min(move_in.abs()) };
+        }
     }
 
     /// The finger lifted while moving at `v` points per second (positive = content should move up).
@@ -123,6 +150,7 @@ impl Scroller {
 
     /// Drives itself from the pointer: press inside `area`, drag, let go. Returns true while it needs more frames.
     pub fn update(&mut self, ctx: &Context, area: Rect, max: f32, enabled: bool, dt: f32) -> bool {
+        self.view = area.height();
         let (pressed, down, pos, time) = ctx.input(|i| (i.pointer.primary_pressed(), i.pointer.primary_down(), i.pointer.latest_pos(), i.time));
         if pressed && enabled && pos.is_some_and(|p| area.contains(p) && !self.exclude.is_some_and(|e| e.contains(p))) {
             self.holding = true;
@@ -213,4 +241,34 @@ pub fn show<R>(ui: &mut Ui, sc: &mut Scroller, salt: impl std::hash::Hash + std:
         sc.offset = sc.max;
     }
     out.inner
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rubber_band_matches_ios_curve() {
+        let mut s = Scroller { view: 800.0, ..Default::default() };
+        // finger pulls 400 pt past the top: shown = (1 - 1/(0.55*400/800+1)) * 800
+        for _ in 0..40 {
+            s.drag_by(10.0, 1000.0);
+        }
+        let want = (1.0 - 1.0 / (0.55 * 400.0 / 800.0 + 1.0)) * 800.0;
+        assert!((-s.offset - want).abs() < 0.5, "{} vs {}", -s.offset, want);
+        // never reaches a whole screen however far the finger goes
+        for _ in 0..400 {
+            s.drag_by(10.0, 1000.0);
+        }
+        assert!(-s.offset < 800.0);
+        // pulling back retraces the curve and returns to the end exactly
+        for _ in 0..440 {
+            s.drag_by(-10.0, 1000.0);
+        }
+        assert!(s.offset.abs() < 0.05, "{}", s.offset);
+        // bottom end
+        let mut b = Scroller { view: 800.0, offset: 1000.0, ..Default::default() };
+        b.drag_by(-100.0, 1000.0);
+        assert!(b.offset > 1000.0 && b.offset < 1100.0);
+    }
 }

@@ -218,6 +218,7 @@ pub fn wallpaper_dark_text() -> bool {
 }
 
 pub fn request_high_refresh(_: bool) {}
+pub fn set_refresh_cap(_: f32) {}
 
 pub fn widget_providers() -> Vec<WidgetProvider> {
     vec![

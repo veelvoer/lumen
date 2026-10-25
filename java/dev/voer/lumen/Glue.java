@@ -117,16 +117,21 @@ public final class Glue {
     }
 
     /** Picks the display mode with the highest refresh rate at the current resolution. */
-    public static void highRefresh(final Activity a, final boolean on) {
+    public static void highRefresh(final Activity a, final boolean on, final float cap) {
         a.runOnUiThread(new Runnable() {
             @Override public void run() {
                 try {
                     android.view.Display d = Build.VERSION.SDK_INT >= 30 ? a.getDisplay() : a.getWindowManager().getDefaultDisplay();
                     if (d == null) return;
                     android.view.Display.Mode cur = d.getMode();
-                    android.view.Display.Mode best = cur;
+                    android.view.Display.Mode best = null;
                     for (android.view.Display.Mode m : d.getSupportedModes()) {
-                        if (m.getPhysicalWidth() == cur.getPhysicalWidth() && m.getPhysicalHeight() == cur.getPhysicalHeight() && m.getRefreshRate() > best.getRefreshRate()) best = m;
+                        // start from the slowest mode at this size so a cap always finds something
+                        if (m.getPhysicalWidth() == cur.getPhysicalWidth() && m.getPhysicalHeight() == cur.getPhysicalHeight() && (best == null || m.getRefreshRate() < best.getRefreshRate())) best = m;
+                    }
+                    if (best == null) best = cur;
+                    for (android.view.Display.Mode m : d.getSupportedModes()) {
+                        if (m.getPhysicalWidth() == cur.getPhysicalWidth() && m.getPhysicalHeight() == cur.getPhysicalHeight() && (cap <= 0f || m.getRefreshRate() <= cap + 0.5f) && m.getRefreshRate() > best.getRefreshRate()) best = m;
                     }
                     android.view.WindowManager.LayoutParams lp = a.getWindow().getAttributes();
                     // off: let the system choose again

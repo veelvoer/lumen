@@ -20,10 +20,12 @@ public final class LumenActivity extends NativeActivity {
 
     /** Live activities in this process. Native code cannot start its window twice in one process. */
     private static int alive = 0;
+    /** A window of this process was closed for good: its native side cannot be started again. */
+    private static boolean destroyed = false;
 
     @Override
     protected void onCreate(Bundle b) {
-        if (alive > 0) {
+        if (alive > 0 || destroyed) {
             // Android started a new window before the old one was gone (apps were cleared, then Home): the native
             // side of the old one is still in this process. End it; Android starts a clean process right away.
             android.os.Process.killProcess(android.os.Process.myPid());
@@ -49,17 +51,14 @@ public final class LumenActivity extends NativeActivity {
         if (i != null && i.hasCategory(Intent.CATEGORY_LAUNCHER) && !i.hasCategory(Intent.CATEGORY_HOME)) settingsRequested = true;
     }
 
-    /**
-     * Swiping Lumen away in the app switcher destroys the activity but leaves the process behind, and native code
-     * cannot start its window twice in one process: the next Home press showed a black screen. End the process so
-     * Android starts a clean one.
-     */
     @Override
     protected void onDestroy() {
         super.onDestroy();
         alive--;
-        // finishing or reclaimed by the system, either way the native window cannot be started again here
-        if (alive <= 0 && !isChangingConfigurations()) android.os.Process.killProcess(android.os.Process.myPid());
+        // Do not end the process here: Android may be about to start the home screen again, and killing the process
+        // underneath that is what looked like a crash. Remember it instead; the next window kills the stale process
+        // while it starts, and Android then restarts it cleanly.
+        if (!isChangingConfigurations()) destroyed = true;
     }
 
     @Override

@@ -169,6 +169,8 @@ pub struct Lumen {
     pub resume_t: Spring,
     pub jig_t: f32,
     pub pager_start: f32,
+    /// frames in motion and slow ones, over the current window (refresh-rate governor)
+    win: (u32, u32),
     pub edit_t: Spring,
     last_launch: f64,
     pub system_dark: bool,
@@ -259,6 +261,7 @@ pub struct Lumen {
 impl Lumen {
     pub fn new(ctx: &Context, dir: String) -> Lumen {
         let cfg = Config::load(&dir);
+        platform::set_refresh_cap(cfg.refresh_cap);
         let phone_colors = platform::dynamic_colors();
         let system_dark = platform::is_dark();
         let _ = (&cfg.mode, 0);
@@ -281,11 +284,12 @@ impl Lumen {
             resume_t: Spring::at(0.0),
             jig_t: 0.0,
             pager_start: 0.0,
+            win: (0, 0),
             edit_t: Spring::at(0.0),
             last_launch: -10.0,
             system_dark,
             wallpaper_dark_text: false,
-            icons: Some(Icons::new(ctx, icons::Style { shape: cfg.shape, radius: cfg.icon_radius, mono: cfg.themed_icons, px: icons::px_for(cfg.icon_size.max(cfg.dock_icon_size), ctx.pixels_per_point()) }, dir.clone())),
+            icons: Some(Icons::new(ctx, icons::Style { shape: cfg.shape, radius: cfg.icon_radius, mono: cfg.themed_icons, px: icons::px_for(cfg.icon_size.max(cfg.dock_icon_size), ctx.pixels_per_point()) }, dir.clone(), !platform::device_info().low_ram)),
             dir,
             apps: Default::default(),
             by_pkg: HashMap::new(),
@@ -940,6 +944,25 @@ impl Lumen {
     fn log_frame_times(&mut self, ctx: &Context) {
         let dt = ctx.input(|i| i.unstable_dt);
         self.perf.frame(dt, self.frame_budget);
+        // Refresh-rate governor: a steady 90 Hz looks smoother than a 120 Hz that misses every tenth frame.
+        if dt > 0.0 && dt < 0.2 {
+            self.win.0 += 1;
+            // a long stall (an app starting, a page loading) is not the refresh rate's fault: only near misses count
+            if dt > self.frame_budget * 1.35 && dt < self.frame_budget * 4.0 {
+                self.win.1 += 1;
+            }
+            if self.win.0 >= 240 {
+                let hz = 1.0 / self.frame_budget.max(0.001);
+                if self.win.1 * 100 / self.win.0 >= 10 && hz > 80.0 && self.cfg.refresh_cap != 120.0 {
+                    let cap = if hz > 100.0 { 90.0 } else { 60.0 };
+                    self.cfg.refresh_cap = cap;
+                    self.dirty = true;
+                    platform::set_refresh_cap(cap);
+                    self.bridge.high_refresh(!self.light);
+                }
+                self.win = (0, 0);
+            }
+        }
         // the phone cannot keep up: lighten up on our own, and remember it
         if self.cfg.perf_mode == crate::config::PerfMode::Auto && !self.light && self.perf.slow_run >= 45 {
             self.cfg.light_learned = true;

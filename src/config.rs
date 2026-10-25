@@ -306,6 +306,8 @@ pub struct Config {
     pub real_glass: bool,
     /// the one-time tip about wallpaper access has been shown
     pub glass_hinted: bool,
+    /// highest refresh rate to ask for; 0 = the screen's best. Lowered on its own when 120 Hz cannot be held.
+    pub refresh_cap: f32,
     pub perf_mode: PerfMode,
     /// Auto mode saw the phone struggle and switched to Light; remembered between starts
     pub light_learned: bool,
@@ -397,6 +399,7 @@ impl Default for Config {
             haptics: true,
             real_glass: true,
             glass_hinted: false,
+            refresh_cap: 0.0,
             perf_mode: PerfMode::Auto,
             light_learned: false,
             margin_side: 0.0,

@@ -829,10 +829,18 @@ pub fn wallpaper_dark_text() -> bool {
 }
 
 /// Runs the screen at its fastest mode (120 Hz on this kind of phone) while Lumen is in front.
+static REFRESH_CAP: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// The highest refresh rate Lumen asks for (0 = the screen's best); lowered when the phone cannot keep up.
+pub fn set_refresh_cap(hz: f32) {
+    REFRESH_CAP.store(hz.to_bits(), std::sync::atomic::Ordering::Relaxed);
+}
+
 pub fn request_high_refresh(on: bool) {
+    let cap = f32::from_bits(REFRESH_CAP.load(std::sync::atomic::Ordering::Relaxed));
     with(|env, act| {
         let cls = glue(env, act, "dev.voer.lumen.Glue")?;
-        env.call_static_method(&cls, "highRefresh", "(Landroid/app/Activity;Z)V", &[JValue::Object(act), JValue::Bool(on as u8)])?;
+        env.call_static_method(&cls, "highRefresh", "(Landroid/app/Activity;ZF)V", &[JValue::Object(act), JValue::Bool(on as u8), JValue::Float(cap)])?;
         Ok(())
     });
 }

@@ -840,6 +840,15 @@ fn performance_page(ui: &mut Ui, l: &mut Lumen, c: &mut Ctl) {
             c.changed = true;
         }
     }
+    section(ui, c, "Frame rate");
+    note(ui, c, "Auto asks for the screen's fastest rate and steps down to 90 or 60 by itself if the phone misses frames, because a steady lower rate looks smoother than an unsteady higher one.");
+    ui.add_space(8.0);
+    let before = l.cfg.refresh_cap;
+    chips(ui, c, &mut l.cfg.refresh_cap, &[(0.0, "Auto"), (120.0, "120"), (90.0, "90"), (60.0, "60")]);
+    if l.cfg.refresh_cap != before {
+        platform::set_refresh_cap(l.cfg.refresh_cap);
+        l.bridge.high_refresh(!l.light);
+    }
     section(ui, c, "About this phone");
     let report = l.diagnostics(&c.ctx);
     for line in report.lines() {

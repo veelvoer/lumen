@@ -12,7 +12,9 @@ use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
-const PAGE: usize = 1024;
+/// Bigger atlas pages hold more icons per texture, so a screen of icons needs fewer texture switches (draw calls)
+const PAGE_BIG: usize = 2048;
+const PAGE_SMALL: usize = 1024;
 
 #[derive(Clone, Copy)]
 pub struct Icon {
@@ -67,6 +69,8 @@ pub struct Icons {
     ctx: Context,
     style: Style,
     generation: u32,
+    /// side of one atlas page in pixels
+    page_px: usize,
 }
 
 /// Rounds the icon pixel size to a multiple of 8, no bigger than needed for crisp drawing.
@@ -108,7 +112,7 @@ fn write_cache(path: &std::path::Path, r: &platform::RawIcon) {
 }
 
 impl Icons {
-    pub fn new(ctx: &Context, style: Style, cache_dir: String) -> Icons {
+    pub fn new(ctx: &Context, style: Style, cache_dir: String, big_pages: bool) -> Icons {
         let dir = PathBuf::from(cache_dir).join("icon-cache");
         let _ = std::fs::create_dir_all(&dir);
         let (tx, rx_req) = channel::<Req>();
@@ -146,7 +150,7 @@ impl Icons {
                 }
             });
         }
-        Icons { pages: vec![], slots: HashMap::new(), next_slot: 2, plate_ready: false, pending: HashSet::new(), stale: HashSet::new(), failed: HashMap::new(), queue: VecDeque::new(), tx, rx, ctx: ctx.clone(), style, generation: 0 }
+        Icons { pages: vec![], slots: HashMap::new(), next_slot: 2, plate_ready: false, pending: HashSet::new(), stale: HashSet::new(), failed: HashMap::new(), queue: VecDeque::new(), tx, rx, ctx: ctx.clone(), style, generation: 0, page_px: if big_pages { PAGE_BIG } else { PAGE_SMALL } }
     }
 
     fn cell(&self) -> usize {
@@ -154,7 +158,7 @@ impl Icons {
     }
 
     fn per_row(&self) -> usize {
-        PAGE / self.cell()
+        self.page_px / self.cell()
     }
 
     fn per_page(&self) -> usize {
@@ -168,7 +172,7 @@ impl Icons {
         let (page, local) = (idx / pp, idx % pp);
         while self.pages.len() <= page {
             let n = self.pages.len();
-            let blank = ColorImage::filled([PAGE, PAGE], egui::Color32::TRANSPARENT);
+            let blank = ColorImage::filled([self.page_px, self.page_px], egui::Color32::TRANSPARENT);
             self.pages.push(self.ctx.load_texture(format!("icons{n}"), blank, TextureOptions::LINEAR));
         }
         let c = self.cell();
@@ -180,7 +184,7 @@ impl Icons {
         let (page, local) = (idx / pp, idx % pp);
         while self.pages.len() <= page {
             let n = self.pages.len();
-            let blank = ColorImage::filled([PAGE, PAGE], egui::Color32::TRANSPARENT);
+            let blank = ColorImage::filled([self.page_px, self.page_px], egui::Color32::TRANSPARENT);
             self.pages.push(self.ctx.load_texture(format!("icons{n}"), blank, TextureOptions::LINEAR));
         }
         let c = self.cell();
@@ -223,7 +227,7 @@ impl Icons {
         let at = |idx: usize| {
             let (page, local) = (idx / pp, idx % pp);
             let (x, y) = (((local % pr) * c + 1) as f32, ((local / pr) * c + 1) as f32);
-            Icon { tex: self.pages[page].id(), uv: Rect::from_min_max(pos2(x / PAGE as f32, y / PAGE as f32), pos2((x + px) / PAGE as f32, (y + px) / PAGE as f32)), mono: false }
+            Icon { tex: self.pages[page].id(), uv: Rect::from_min_max(pos2(x / self.page_px as f32, y / self.page_px as f32), pos2((x + px) / self.page_px as f32, (y + px) / self.page_px as f32)), mono: false }
         };
         Some((at(0), at(1)))
     }
@@ -268,7 +272,7 @@ impl Icons {
         let s = self.slots.get(&app.pkg)?;
         let px = self.style.px as f32;
         let (x, y) = ((s.x + 1) as f32, (s.y + 1) as f32);
-        let uv = Rect::from_min_max(pos2(x / PAGE as f32, y / PAGE as f32), pos2((x + px) / PAGE as f32, (y + px) / PAGE as f32));
+        let uv = Rect::from_min_max(pos2(x / self.page_px as f32, y / self.page_px as f32), pos2((x + px) / self.page_px as f32, (y + px) / self.page_px as f32));
         Some(Icon { tex: self.pages[s.page].id(), uv, mono: s.mono })
     }
 

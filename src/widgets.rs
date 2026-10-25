@@ -282,7 +282,7 @@ pub fn liquid_glass(p: &Painter, rect: Rect, radius: f32, pal: &Palette, name: &
         return;
     }
     // no wallpaper to blur: a clean milky pane, lighter at the top so it still reads as glass
-    p.rect_filled(rect, cr(r), Color32::from_white_alpha(if pal.light { 110 } else { 46 }));
+    p.rect_filled(rect, cr(r), Color32::from_white_alpha(if pal.light { 130 } else { 62 }));
     if crate::perf::light() {
         p.rect_stroke(rect, cr(r), Stroke::new(1.0, Color32::from_white_alpha(70)), StrokeKind::Inside);
         return;

@@ -1027,6 +1027,16 @@ pub fn request_wallpaper_access() {
     });
 }
 
+/// Recent crashes and kills of Lumen's process, as Android recorded them.
+pub fn exit_info() -> String {
+    with(|env, act| {
+        let cls = glue(env, act, "dev.voer.lumen.Glue")?;
+        let s = env.call_static_method(&cls, "exitInfo", "(Landroid/app/Activity;)Ljava/lang/String;", &[JValue::Object(act)])?.l()?;
+        Ok(jstr(env, &s))
+    })
+    .unwrap_or_default()
+}
+
 pub fn wallpaper_live() -> bool {
     with(|env, act| {
         let cls = glue(env, act, "dev.voer.lumen.Glue")?;

@@ -304,6 +304,8 @@ pub struct Config {
     pub haptics: bool,
     /// read the wallpaper (with permission) to make real Liquid Glass
     pub real_glass: bool,
+    /// the one-time tip about wallpaper access has been shown
+    pub glass_hinted: bool,
     pub perf_mode: PerfMode,
     /// Auto mode saw the phone struggle and switched to Light; remembered between starts
     pub light_learned: bool,
@@ -394,6 +396,7 @@ impl Default for Config {
             blur: 1.0,
             haptics: true,
             real_glass: true,
+            glass_hinted: false,
             perf_mode: PerfMode::Auto,
             light_learned: false,
             margin_side: 0.0,

@@ -308,3 +308,7 @@ pub fn request_wallpaper_access() {}
 pub fn wallpaper_live() -> bool {
     false
 }
+
+pub fn exit_info() -> String {
+    String::new()
+}

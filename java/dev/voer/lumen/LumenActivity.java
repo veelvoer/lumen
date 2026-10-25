@@ -18,8 +18,17 @@ public final class LumenActivity extends NativeActivity {
         else if (intent.hasCategory(Intent.CATEGORY_LAUNCHER)) settingsRequested = true;
     }
 
+    /** Live activities in this process. Native code cannot start its window twice in one process. */
+    private static int alive = 0;
+
     @Override
     protected void onCreate(Bundle b) {
+        if (alive > 0) {
+            // Android started a new window before the old one was gone (apps were cleared, then Home): the native
+            // side of the old one is still in this process. End it; Android starts a clean process right away.
+            android.os.Process.killProcess(android.os.Process.myPid());
+        }
+        alive++;
         super.onCreate(b);
         // NativeActivity asks for an opaque RGB_565 window; the wallpaper can only show through a translucent one
         getWindow().setFormat(android.graphics.PixelFormat.TRANSLUCENT);
@@ -36,7 +45,9 @@ public final class LumenActivity extends NativeActivity {
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        if (isFinishing()) android.os.Process.killProcess(android.os.Process.myPid());
+        alive--;
+        // finishing or reclaimed by the system, either way the native window cannot be started again here
+        if (alive <= 0 && !isChangingConfigurations()) android.os.Process.killProcess(android.os.Process.myPid());
     }
 
     @Override

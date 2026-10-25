@@ -190,6 +190,26 @@ public final class Glue {
 
     public static String wallpaperError() { return wallpaperError; }
 
+    /** Why Android ended Lumen's last few processes (crash, native crash, ANR, killed...), newest first. */
+    public static String exitInfo(Activity a) {
+        if (android.os.Build.VERSION.SDK_INT < 30) return "";
+        try {
+            android.app.ActivityManager am = (android.app.ActivityManager) a.getSystemService(android.content.Context.ACTIVITY_SERVICE);
+            java.util.List<android.app.ApplicationExitInfo> l = am.getHistoricalProcessExitReasons(a.getPackageName(), 0, 6);
+            StringBuilder sb = new StringBuilder();
+            for (android.app.ApplicationExitInfo e : l) {
+                int r = e.getReason();
+                String name = r == 4 ? "crash" : r == 5 ? "native crash" : r == 6 ? "not responding" : r == 3 ? "slow start" : r == 2 ? "signal" : r == 10 ? "user" : r == 16 ? "update" : r == 13 ? "system" : r == 12 ? "memory" : "other " + r;
+                if (r == 16 || r == 10) continue;
+                sb.append(new java.text.SimpleDateFormat("MM-dd HH:mm:ss", java.util.Locale.US).format(new java.util.Date(e.getTimestamp()))).append(' ').append(name);
+                String d = e.getDescription();
+                if (d != null && d.length() > 0) sb.append(" (").append(d.length() > 90 ? d.substring(0, 90) : d).append(')');
+                sb.append('\n');
+            }
+            return sb.toString();
+        } catch (Throwable t) { return ""; }
+    }
+
     public static boolean takeSettings() {
         boolean was = LumenActivity.settingsRequested;
         LumenActivity.settingsRequested = false;

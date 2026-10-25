@@ -332,7 +332,7 @@ impl Lumen {
                 self.scale_sp.remove(&k);
             }
         }
-        if busy {
+        if busy || self.edit {
             ctx.request_repaint();
         }
     }

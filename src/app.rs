@@ -517,6 +517,11 @@ impl Lumen {
             self.wallpaper_access = snap.wallpaper_access;
             self.wallpaper_live = snap.wallpaper_live;
         }
+        if snap.battery.is_some() && self.cfg.preset == Preset::Ios && self.cfg.real_glass && !self.wallpaper_access && !self.wallpaper_live && !self.cfg.glass_hinted && self.whats_new.is_none() {
+            self.cfg.glass_hinted = true;
+            self.dirty = true;
+            self.toast(ctx, "Frosted dock: allow wallpaper access in Settings > Look");
+        }
         // real Liquid Glass needs the wallpaper: only when allowed, not live, and the phone can afford it
         let want_glass = self.cfg.real_glass && !self.light && self.wallpaper_access && !self.wallpaper_live;
         if want_glass {
@@ -957,7 +962,7 @@ impl Lumen {
         let r = ctx.content_rect();
         let k = ctx.pixels_per_point();
         format!(
-            "Lumen {}\nDevice: {} {} (Android API {})\nMemory: {} MB{}, {} cores\nScreen: {:.0}x{:.0} px, density {:.2}, {:.0} Hz\nGraphics: {}\nMode: {:?}, light is {}{}\nWallpaper: {}\nFrame time while moving: {:.1} ms (budget {:.1} ms)\nApps: {}, icons loaded {} ({} px, {} atlas pages)\nPreset: {:?}, grid {}x{}, pages {}",
+            "Lumen {}\nDevice: {} {} (Android API {})\nMemory: {} MB{}, {} cores\nScreen: {:.0}x{:.0} px, density {:.2}, {:.0} Hz\nGraphics: {}\nMode: {:?}, light is {}{}\nWallpaper: {}\nFrame time while moving: {:.1} ms (budget {:.1} ms)\nApps: {}, icons loaded {} ({} px, {} atlas pages)\nPreset: {:?}, grid {}x{}, pages {}\nCrashes and kills: {}",
             self.version,
             self.device.manufacturer,
             self.device.model,
@@ -984,6 +989,11 @@ impl Lumen {
             self.cfg.cols,
             self.cfg.rows,
             self.cfg.pages.len(),
+            {
+                static EXIT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+                let e = EXIT.get_or_init(platform::exit_info);
+                if e.trim().is_empty() { "none".to_string() } else { format!("\n{}", e.trim_end()) }
+            },
         )
     }
 

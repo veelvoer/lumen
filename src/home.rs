@@ -382,7 +382,7 @@ impl Lumen {
             let s_total = r * s;
             egui::emath::TSTransform::new(centre * (1.0 - s_total) + vec2(tx * r, 0.0), s_total)
         };
-        let base_alpha = (1.0 - fade * amount) * (1.0 - 0.4 * resume);
+        let base_alpha = (1.0 - fade * amount) * (1.0 - 0.4 * resume) * (1.0 - (self.search_t.x * 1.4).clamp(0.0, 1.0));
 
         let lib = if cfg.app_library { Some((self.lib_groups(), self.lib_layout(geo, 0.0))) } else { None };
         if let Some((_, (_, _, content))) = &lib {
@@ -557,7 +557,8 @@ impl Lumen {
         for name in ["dock", "top", "popup", "chrome", "resize", "drag", "ghost"] {
             ctx.move_to_top(egui::LayerId::new(egui::Order::Middle, egui::Id::new(("lumen-layer", name, 0usize))));
         }
-        if moving {
+        if moving || self.edit {
+            // the jiggle needs a frame every vsync, not only when something else moves
             ctx.request_repaint();
         }
     }
@@ -565,15 +566,15 @@ impl Lumen {
     fn paint_edit_chrome(&self, p: &Painter, geo: &Geo) {
         let pal = &self.pal;
         let y = edit_chrome_y(geo);
-        let plus = Rect::from_center_size(pos2(geo.screen.left() + 34.0, y), vec2(40.0, 40.0));
-        p.circle_filled(plus.center(), 18.0, Color32::from_white_alpha(60));
-        widgets::glyph_at(p, plus.center(), Align2::CENTER_CENTER, ph::PLUS, 20.0, Color32::WHITE);
-        let gear = pos2(geo.screen.left() + 34.0 + 48.0, y);
-        p.circle_filled(gear, 18.0, Color32::from_white_alpha(60));
-        widgets::glyph_at(p, gear, Align2::CENTER_CENTER, ph::GEAR, 20.0, Color32::WHITE);
-        let done = Rect::from_center_size(pos2(geo.screen.right() - 52.0, y), vec2(80.0, 36.0));
-        p.rect_filled(done, cr(18.0), Color32::from_white_alpha(60));
-        p.text(done.center(), Align2::CENTER_CENTER, "Done", fonts::body(&self.cfg, 16.0, true), Color32::WHITE);
+        let plus = pos2(geo.screen.left() + 34.0, y);
+        p.circle_filled(plus, 14.0, Color32::from_white_alpha(60));
+        widgets::glyph_at(p, plus, Align2::CENTER_CENTER, ph::PLUS, 16.0, Color32::WHITE);
+        let gear = pos2(geo.screen.left() + 34.0 + 38.0, y);
+        p.circle_filled(gear, 14.0, Color32::from_white_alpha(60));
+        widgets::glyph_at(p, gear, Align2::CENTER_CENTER, ph::GEAR, 16.0, Color32::WHITE);
+        let done = Rect::from_center_size(pos2(geo.screen.right() - 48.0, y), vec2(68.0, 28.0));
+        p.rect_filled(done, cr(14.0), Color32::from_white_alpha(60));
+        p.text(done.center(), Align2::CENTER_CENTER, "Done", fonts::body(&self.cfg, 15.0, true), Color32::WHITE);
         let _ = pal;
     }
 
@@ -941,10 +942,10 @@ impl Lumen {
             if (pos - pos2(geo.screen.left() + 34.0, edit_chrome_y(geo))).length() < 26.0 {
                 return Hit::EditAdd;
             }
-            if (pos - pos2(geo.screen.left() + 34.0 + 48.0, edit_chrome_y(geo))).length() < 26.0 {
+            if (pos - pos2(geo.screen.left() + 34.0 + 38.0, edit_chrome_y(geo))).length() < 26.0 {
                 return Hit::EditSettings;
             }
-            if Rect::from_center_size(pos2(geo.screen.right() - 52.0, edit_chrome_y(geo)), vec2(90.0, 44.0)).contains(pos) {
+            if Rect::from_center_size(pos2(geo.screen.right() - 48.0, edit_chrome_y(geo)), vec2(84.0, 44.0)).contains(pos) {
                 return Hit::EditDone;
             }
         }
@@ -1621,7 +1622,7 @@ impl Lumen {
 // ───────────────────────────── item painting (free functions to keep borrows apart) ─────────────────────────────
 
 fn edit_chrome_y(geo: &Geo) -> f32 {
-    (geo.top - 8.0).max(26.0)
+    geo.top + 7.0
 }
 
 type Find<'a> = dyn Fn(&str) -> Option<&'a platform::App> + 'a;
@@ -1774,10 +1775,12 @@ fn page_effect(e: PageEffect, d: f32, w: f32) -> (f32, f32, f32) {
 
 /// Each item sways a little differently, so the edit mode looks alive.
 fn jiggle(t: f32, key: &str) -> f32 {
-    // iOS: about two degrees, 7 or 8 swings a second, every icon a little out of step
+    // iOS: about two degrees, four to five swings a second, every icon a little out of step. A pure sine at
+    // this rate is sampled 12+ times a cycle even at 60 fps, so it stays fluid; t is wrapped to keep f32 exact.
     let phase = key.bytes().fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(b as u32)) as f32 * 0.37;
-    let f = 1.0 + (phase.sin() * 0.08);
-    ((t * 66.0 * f + phase).sin() * 0.036) + ((t * 43.0 + phase * 1.7).sin() * 0.008)
+    let f = 1.0 + (phase.sin() * 0.06);
+    let t = t.rem_euclid(1000.0);
+    (t * 31.0 * f + phase).sin() * 0.034
 }
 
 /// A transformed, faded painting layer. Layers are areas so their stacking order is stable.

@@ -250,7 +250,7 @@ fn render(sm: &Small, w: usize, h: usize, rect: Rect, radius: f32, screen: Rect,
     let half = vec2(rect.width(), rect.height()) / 2.0;
     let r = radius.min(half.x.min(half.y));
     let inner = half - vec2(r, r);
-    let band = (half.x.min(half.y) * 0.62).min(26.0).max(6.0);
+    let band = (half.x.min(half.y) * 0.7).min(30.0).max(7.0);
     let light = vec2(-0.5, -0.86).normalized();
     let tint = [tint.r() as f32, tint.g() as f32, tint.b() as f32, tint.a() as f32 / 255.0];
     let to_uv = |p: egui::Pos2| ((uvw.min.x + (p.x - screen.min.x) / screen.width() * uvw.width()), (uvw.min.y + (p.y - screen.min.y) / screen.height() * uvw.height()));
@@ -275,14 +275,14 @@ fn render(sm: &Small, w: usize, h: usize, rect: Rect, radius: f32, screen: Rect,
             };
             let t = (-d / band).clamp(0.0, 1.0); // 0 on the rim, 1 deep inside
             let edge = (1.0 - t).powf(2.2);
-            let bend = edge * band * 1.15; // how far the picture is pulled in, in points
+            let bend = edge * band * 1.6; // how far the picture is pulled in, in points
             let center = rect.center();
             let at = |k: f32, img: &[u8]| {
                 let p = center + lp + n * bend * k;
                 let (u, v) = to_uv(p);
                 sample(img, sm.w, sm.h, u, v)
             };
-            let mix = 0.55 + 0.3 * t;
+            let mix = 0.34 + 0.16 * t;
             let (mut cr, mut cg, mut cb);
             if edge > 0.02 {
                 let (a, b, c) = (at(1.07, &sm.sharp), at(1.0, &sm.sharp), at(0.93, &sm.sharp));
@@ -299,11 +299,12 @@ fn render(sm: &Small, w: usize, h: usize, rect: Rect, radius: f32, screen: Rect,
             }
             // a touch more color, a touch lighter (glass gathers light)
             let lum = cr * 0.3 + cg * 0.59 + cb * 0.11;
-            let sat = 1.28;
+            let sat = 1.18;
             cr = lum + (cr - lum) * sat;
             cg = lum + (cg - lum) * sat;
             cb = lum + (cb - lum) * sat;
-            let lift = if dark { 16.0 } else { 18.0 };
+            let top = 1.0 - ((y as f32 + 0.5) / h as f32);
+            let lift = (if dark { 6.0 } else { 9.0 }) + 16.0 * top * top;
             cr += lift;
             cg += lift;
             cb += lift;
@@ -313,8 +314,8 @@ fn render(sm: &Small, w: usize, h: usize, rect: Rect, radius: f32, screen: Rect,
             cb = cb * (1.0 - tint[3]) + tint[2] * tint[3];
             // light on the curved rim: a bright crescent where the edge faces the light, a faint one opposite
             let facing = n.x * light.x + n.y * light.y;
-            let spec = facing.max(0.0).powf(5.0) * edge.powf(0.8) * 120.0 + (-facing).max(0.0).powf(5.0) * edge.powf(0.8) * 40.0;
-            let fres = edge.powf(1.6) * 26.0;
+            let spec = facing.max(0.0).powf(3.2) * edge.powf(0.9) * 190.0 + (-facing).max(0.0).powf(3.2) * edge.powf(0.9) * 95.0;
+            let fres = edge.powf(3.0) * 46.0 + edge.powf(1.4) * 10.0;
             // a soft shade on the lower inside, so the panel looks thick
             let shade = (1.0 - facing.max(0.0)) * (1.0 - t).powf(1.2) * if dark { 0.06 } else { 0.04 };
             let f = |c: f32| (((c + spec + fres) * (1.0 - shade)).clamp(0.0, 255.0) * cover) as u8;

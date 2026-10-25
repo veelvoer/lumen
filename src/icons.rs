@@ -58,7 +58,7 @@ pub struct Icons {
     pending: HashSet<String>,
     stale: HashSet<String>,
     /// apps whose icon Android could not give us: not asked again until the style changes
-    failed: HashSet<String>,
+    failed: HashMap<String, u8>,
     queue: VecDeque<App>,
     /// the first two atlas cells hold a plain plate and a thin ring in the icon shape, so plates batch with icons
     plate_ready: bool,
@@ -146,7 +146,7 @@ impl Icons {
                 }
             });
         }
-        Icons { pages: vec![], slots: HashMap::new(), next_slot: 2, plate_ready: false, pending: HashSet::new(), stale: HashSet::new(), failed: HashSet::new(), queue: VecDeque::new(), tx, rx, ctx: ctx.clone(), style, generation: 0 }
+        Icons { pages: vec![], slots: HashMap::new(), next_slot: 2, plate_ready: false, pending: HashSet::new(), stale: HashSet::new(), failed: HashMap::new(), queue: VecDeque::new(), tx, rx, ctx: ctx.clone(), style, generation: 0 }
     }
 
     fn cell(&self) -> usize {
@@ -242,7 +242,8 @@ impl Icons {
             self.pending.remove(&d.key);
             self.stale.remove(&d.key);
             if d.img.is_none() {
-                self.failed.insert(d.key.clone());
+                // a load can fail while Android is busy starting or stopping an app: try again a couple of times
+                *self.failed.entry(d.key.clone()).or_insert(0) += 1;
             }
             if let Some((img, mono)) = d.img {
                 let slot = match self.slots.get(&d.key) {
@@ -261,7 +262,7 @@ impl Icons {
     }
 
     pub fn get(&mut self, app: &App) -> Option<Icon> {
-        if (!self.slots.contains_key(&app.pkg) || self.stale.contains(&app.pkg)) && !self.failed.contains(&app.pkg) && self.pending.insert(app.pkg.clone()) {
+        if (!self.slots.contains_key(&app.pkg) || self.stale.contains(&app.pkg)) && self.failed.get(&app.pkg).copied().unwrap_or(0) < 3 && self.pending.insert(app.pkg.clone()) {
             let _ = self.tx.send(Req { app: app.clone(), style: self.style, generation: self.generation });
         }
         let s = self.slots.get(&app.pkg)?;
@@ -313,7 +314,12 @@ impl Icons {
 
     /// True when Android could not produce this app's icon (a letter is drawn instead).
     pub fn failed(&self, pkg: &str) -> bool {
-        self.failed.contains(pkg)
+        self.failed.get(pkg).copied().unwrap_or(0) >= 3
+    }
+
+    /// Back from an app: give every icon that failed another chance.
+    pub fn retry_failed(&mut self) {
+        self.failed.clear();
     }
 
     pub fn stats(&self) -> (usize, usize, i32) {

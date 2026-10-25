@@ -103,7 +103,7 @@ pub fn is_default_home() -> bool {
 }
 pub fn pick_default_home() {}
 pub fn insets() -> Insets {
-    Insets { left: 0.0, top: 72.0, right: 0.0, bottom: 63.0 }
+    Insets { left: 0.0, top: 72.0, right: 0.0, bottom: 63.0, kb: 0.0 }
 }
 pub fn is_24h() -> bool {
     true

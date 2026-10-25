@@ -116,7 +116,7 @@ impl Bridge {
                 poll(&mut next, slow);
                 let changed = {
                     let cur = s2.lock().unwrap();
-                    (next.insets.top, next.insets.bottom, next.insets.left, next.insets.right) != (cur.insets.top, cur.insets.bottom, cur.insets.left, cur.insets.right)
+                    (next.insets.top, next.insets.bottom, next.insets.left, next.insets.right, next.insets.kb) != (cur.insets.top, cur.insets.bottom, cur.insets.left, cur.insets.right, cur.insets.kb)
                         || next.home_pressed
                         || next.settings_requested
                         || next.dark != cur.dark

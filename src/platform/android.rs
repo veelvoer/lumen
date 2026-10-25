@@ -251,15 +251,15 @@ pub fn insets() -> Insets {
         if android_sdk() < 30 {
             // older Android has no typed insets: the system window insets already include the keyboard
             let g = |env: &mut JNIEnv, n: &str| env.call_method(&wi, n, "()I", &[]).and_then(|v| v.i()).map(|v| v as f32);
-            return Ok(Insets { left: g(env, "getSystemWindowInsetLeft")?, top: g(env, "getSystemWindowInsetTop")?, right: g(env, "getSystemWindowInsetRight")?, bottom: g(env, "getSystemWindowInsetBottom")? });
+            return Ok(Insets { left: g(env, "getSystemWindowInsetLeft")?, top: g(env, "getSystemWindowInsetTop")?, right: g(env, "getSystemWindowInsetRight")?, bottom: g(env, "getSystemWindowInsetBottom")?, kb: 0.0 });
         }
         let sb = env.call_static_method("android/view/WindowInsets$Type", "systemBars", "()I", &[])?.i()?;
         let dc = env.call_static_method("android/view/WindowInsets$Type", "displayCutout", "()I", &[])?.i()?;
         let ime = env.call_static_method("android/view/WindowInsets$Type", "ime", "()I", &[])?.i()?;
-        // the keyboard counts as bottom space, so search fields rise above it
-        let ins = env.call_method(&wi, "getInsets", "(I)Landroid/graphics/Insets;", &[JValue::Int(sb | dc | ime)])?.l()?;
-        let g = |env: &mut JNIEnv, n: &str| env.get_field(&ins, n, "I").and_then(|v| v.i()).map(|v| v as f32);
-        Ok(Insets { left: g(env, "left")?, top: g(env, "top")?, right: g(env, "right")?, bottom: g(env, "bottom")? })
+        let ins = env.call_method(&wi, "getInsets", "(I)Landroid/graphics/Insets;", &[JValue::Int(sb | dc)])?.l()?;
+        let kb = env.call_method(&wi, "getInsets", "(I)Landroid/graphics/Insets;", &[JValue::Int(ime)])?.l()?;
+        let g = |env: &mut JNIEnv, o: &JObject, n: &str| env.get_field(o, n, "I").and_then(|v| v.i()).map(|v| v as f32);
+        Ok(Insets { left: g(env, &ins, "left")?, top: g(env, &ins, "top")?, right: g(env, &ins, "right")?, bottom: g(env, &ins, "bottom")?, kb: g(env, &kb, "bottom")? })
     })
     .unwrap_or_default()
 }

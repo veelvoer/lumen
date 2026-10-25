@@ -142,7 +142,7 @@ impl Lumen {
         let y = screen.top() + (1.0 - t.min(1.02)) * screen.height();
         let rect = Rect::from_min_size(pos2(screen.left(), y), screen.size());
         let k = ctx.pixels_per_point();
-        let (il, it, ir, ib) = (self.insets.left / k, self.insets.top / k, self.insets.right / k, self.insets.bottom / k);
+        let (il, it, ir, ib) = (self.insets.left / k, self.insets.top / k, self.insets.right / k, self.insets.bottom.max(self.insets.kb) / k);
         let pal = self.pal;
         let cfg = self.cfg.clone();
         let nothing = cfg.preset == Preset::Nothing;
@@ -187,7 +187,7 @@ impl Lumen {
                     .font(fonts::body(&cfg, 16.0 * cfg.font_scale, false))
                     .background_color(Color32::TRANSPARENT)
                     .frame(Frame::NONE);
-                let r = ui.add(te);
+                let r = ui.add_sized(field.size(), te);
                 if self.focus_search && t > 0.9 {
                     r.request_focus();
                     self.focus_search = false;
@@ -495,7 +495,7 @@ impl Lumen {
         let cfg = self.cfg.clone();
         let k = ctx.pixels_per_point();
         let it = self.insets.top / k;
-        let ib = self.insets.bottom / k;
+        let ib = self.insets.bottom.max(self.insets.kb) / k;
         let mut launch: Option<String> = None;
         let mut web: Option<String> = None;
         let mut cancel = false;
@@ -511,18 +511,19 @@ impl Lumen {
         Area::new(Id::new("search")).order(Order::Foreground).fixed_pos(screen.min).show(ctx, |ui| {
             let ios = cfg.preset == Preset::Ios;
             ui.set_opacity((st * 1.7).min(1.0));
-            ui.painter().rect_filled(screen, cr(36.0 * (1.0 - st) + 0.01), if ios { Color32::from_black_alpha(190) } else { pal.sheet });
+            ui.painter().rect_filled(screen, cr(36.0 * (1.0 - st) + 0.01), if ios { Color32::from_black_alpha(238) } else { pal.sheet });
             ui.allocate_rect(screen, Sense::click_and_drag());
             let top = screen.top() + it.max(10.0) + 10.0;
             let bar = Rect::from_min_size(pos2(screen.left() + 16.0, top), vec2(screen.width() - 32.0 - 72.0, 46.0));
-            ui.painter().rect_filled(bar, cr(23.0), if ios { Color32::from_white_alpha(46) } else { pal.search_bg });
+            ui.painter().rect_filled(bar, cr(23.0), if ios { Color32::from_white_alpha(40) } else { pal.search_bg });
             widgets::glyph_at(ui.painter(), bar.left_center() + vec2(16.0, 0.0), Align2::LEFT_CENTER, ph::MAGNIFYING_GLASS, 18.0, pal.dim);
-            let field = Rect::from_min_max(pos2(bar.left() + 44.0, bar.top()), pos2(bar.right() - 14.0, bar.bottom()));
+            let field = Rect::from_min_max(pos2(bar.left() + 44.0, bar.top() + 3.0), pos2(bar.right() - 14.0, bar.bottom() + 3.0));
             ui.scope_builder(UiBuilder::new().max_rect(field), |ui| {
                 let te = egui::TextEdit::singleline(&mut self.query)
                     .hint_text(egui::RichText::new("Search").color(pal.dim))
                     .desired_width(f32::INFINITY)
-                    .margin(vec2(0.0, 12.0))
+                    .margin(vec2(0.0, 0.0))
+                    .vertical_align(egui::Align::Center)
                     .font(fonts::body(&cfg, 16.0, false))
                     .background_color(Color32::TRANSPARENT)
                     .frame(Frame::NONE);

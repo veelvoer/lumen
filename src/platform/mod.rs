@@ -106,6 +106,8 @@ pub struct Insets {
     pub top: f32,
     pub right: f32,
     pub bottom: f32,
+    /// keyboard height (0 when hidden); never part of `bottom`, so the home screen never squishes
+    pub kb: f32,
 }
 
 /// What the phone is, for choosing how much to draw and for bug reports.

@@ -234,10 +234,11 @@ pub fn badge(p: &Painter, icon: Rect, count: u32, cfg: &Config, pal: &Palette) {
 pub fn folder_icon(p: &Painter, rect: Rect, apps: &[&App], icons: &mut Icons, cfg: &Config, pal: &Palette, scale: f32, rot: f32) {
     let rect = Rect::from_center_size(rect.center(), rect.size() * scale);
     let radius = plate_radius(cfg, rect.width());
-    let _ = rot;
-    p.rect_filled(rect, cr(radius), pal.folder_bg);
+    let centre = rect.center();
+    let turn = egui::emath::Rot2::from_angle(rot);
+    p.add(egui::epaint::RectShape::filled(rect, cr(radius), pal.folder_bg).with_angle(rot));
     if cfg.preset == Preset::Nothing {
-        p.rect_stroke(rect, cr(radius), Stroke::new(1.0, pal.glass_line), StrokeKind::Inside);
+        p.add(egui::epaint::RectShape::stroke(rect, cr(radius), Stroke::new(1.0, pal.glass_line), StrokeKind::Inside).with_angle(rot));
     }
     let n = if cfg.preset == Preset::Ios { 3 } else { 2 };
     let pad = rect.width() * if n == 3 { 0.1 } else { 0.14 };
@@ -246,12 +247,12 @@ pub fn folder_icon(p: &Painter, rect: Rect, apps: &[&App], icons: &mut Icons, cf
     for (i, a) in apps.iter().take(n * n).enumerate() {
         let (c, r) = (i % n, i / n);
         let tl = rect.min + vec2(pad + c as f32 * (cell + gap), pad + r as f32 * (cell + gap));
-        let mini = Rect::from_min_size(tl, vec2(cell, cell));
+        let mini = Rect::from_center_size(centre + turn * (tl + vec2(cell, cell) / 2.0 - centre), vec2(cell, cell));
         let mut mini_cfg = cfg.clone();
         if cfg.shape == Shape::Rounded {
             mini_cfg.icon_radius = cfg.icon_radius;
         }
-        app_icon(p, mini, a, icons, &mini_cfg, pal, 1.0, 0.0, 1.0);
+        app_icon(p, mini, a, icons, &mini_cfg, pal, 1.0, rot, 1.0);
     }
 }
 

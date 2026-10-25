@@ -520,7 +520,7 @@ impl Config {
                 self.dock_slots = 4;
                 self.labels = true;
                 self.themed_icons = false;
-                self.search = Search::Off;
+                self.search = Search::Bottom;
                 self.drawer = DrawerStyle::Grid;
                 self.drawer_cols = 4;
                 self.suggestions = false;
@@ -594,6 +594,12 @@ impl Config {
         if c.migrated < 1 {
             c.migrated = 1;
             c.drawer_scrubber = true;
+        }
+        if c.migrated < 2 {
+            c.migrated = 2;
+            if c.preset == Preset::Ios {
+                c.search = Search::Bottom;
+            }
         }
         c
     }

@@ -271,6 +271,18 @@ pub fn glass(p: &Painter, rect: Rect, radius: f32, pal: &Palette) {
 }
 
 pub fn search_pill(p: &Painter, rect: Rect, text: &str, cfg: &Config, pal: &Palette, trailing: bool) {
+    if cfg.preset == Preset::Ios && rect.width() < 160.0 {
+        // iOS: a small frosted capsule with a magnifier and "Search"
+        p.rect_filled(rect, cr(rect.height() / 2.0), Color32::from_black_alpha(70));
+        p.rect_filled(rect, cr(rect.height() / 2.0), Color32::from_white_alpha(38));
+        let font = fonts::body(cfg, rect.height() * 0.36, false);
+        let tw = text_width(p, "Search", &font);
+        let gw = rect.height() * 0.36;
+        let x0 = rect.center().x - (tw + gw + 5.0) / 2.0;
+        glyph_at(p, pos2(x0, rect.center().y), Align2::LEFT_CENTER, egui_phosphor_glyph::MAGNIFYING_GLASS, gw, Color32::from_white_alpha(235));
+        p.text(pos2(x0 + gw + 5.0, rect.center().y), Align2::LEFT_CENTER, "Search", font, Color32::from_white_alpha(235));
+        return;
+    }
     let r = if cfg.preset == Preset::Nothing { 14.0 } else { rect.height() / 2.0 };
     p.rect_filled(rect, cr(r), pal.search_bg);
     if cfg.preset == Preset::Nothing {

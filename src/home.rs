@@ -68,6 +68,22 @@ impl Lumen {
         let (gl, gr) = (left, right);
         // on wide screens the bars stay a comfortable width
         let (left, right) = if right - left > 760.0 { let mid = (left + right) / 2.0; (mid - 380.0, mid + 380.0) } else { (left, right) };
+        if c.preset == Preset::Ios && c.search == Search::Bottom {
+            // SpringBoard metrics (iPhone 15, 393 x 852 pt), scaled to this screen: side margin 11, row pitch 97,
+            // dock 94 high with a 38 radius, a small Search capsule between the grid and the dock, dots above it.
+            let s = (screen.width() / 393.0).min(screen.height() / 852.0 * 1.02).clamp(0.8, 1.5);
+            let dock_h = 94.0 * s;
+            let dock_bottom = screen.bottom() - (ib * 0.5).max(8.0 * s) - c.margin_bottom;
+            let dock = Rect::from_min_max(pos2(left, dock_bottom - dock_h), pos2(right, dock_bottom));
+            let pill = Rect::from_center_size(pos2(screen.center().x, dock.top() - 14.0 * s - 18.0 * s), vec2(88.0 * s, 36.0 * s));
+            let dots_y = pill.top() - 13.0 * s;
+            let top = screen.top() + it + 14.0 * s + c.margin_top;
+            let pitch = (97.0 * s).min((dots_y - 18.0 * s - top) / c.rows as f32);
+            let grid = Rect::from_min_size(pos2(gl, top), vec2(gr - gl, pitch * c.rows as f32));
+            let cell = vec2(grid.width() / c.cols as f32, pitch);
+            let dock_slot_w = (dock.width() / c.dock_slots.max(1) as f32).min(100.0 * s);
+            return Geo { screen, top: screen.top() + it, grid, cell, dock, search: Some(pill), dots_y, dock_slot_w };
+        }
         let mut y = bottom;
         let mut search = None;
 

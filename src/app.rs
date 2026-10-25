@@ -163,6 +163,8 @@ pub struct Lumen {
     last_scan: std::time::Instant,
     /// 1 right after coming back from an app, then eases to 0: the home screen settles in
     pub resume_t: Spring,
+    pub edit_t: Spring,
+    last_launch: f64,
     pub system_dark: bool,
     pub wallpaper_dark_text: bool,
     pub apps: std::rc::Rc<Vec<App>>,
@@ -265,6 +267,8 @@ impl Lumen {
             scan_pending: false,
             last_scan: std::time::Instant::now(),
             resume_t: Spring::at(0.0),
+            edit_t: Spring::at(0.0),
+            last_launch: -10.0,
             system_dark,
             wallpaper_dark_text: false,
             icons: Some(Icons::new(ctx, icons::Style { shape: cfg.shape, radius: cfg.icon_radius, mono: cfg.themed_icons, px: icons::px_for(cfg.icon_size.max(cfg.dock_icon_size), ctx.pixels_per_point()) }, dir.clone())),
@@ -536,7 +540,6 @@ impl Lumen {
                 self.last_scan = std::time::Instant::now();
                 self.apps_rx = spawn_app_scan(ctx);
             }
-            self.resume_t.snap(1.0);
             self.bridge.high_refresh(!self.light);
         }
         self.was_focused = focused;
@@ -740,6 +743,12 @@ impl Lumen {
 
     /// Starts an app. With the icon's rectangle (in points) the system zooms out of the icon.
     pub fn launch_at(&mut self, ctx: &Context, pkg: &str, from: Option<Rect>) {
+        // a second tap while an app is already opening must do nothing
+        let now = ctx.input(|i| i.time);
+        if now - self.last_launch < 0.6 {
+            return;
+        }
+        self.last_launch = now;
         if pkg == platform::PACKAGE {
             self.open_settings();
             self.close_drawer(ctx);

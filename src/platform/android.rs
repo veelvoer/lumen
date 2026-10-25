@@ -986,3 +986,11 @@ pub fn refresh_rate() -> f32 {
     })
     .unwrap_or(60.0)
 }
+
+/// Starts a system action, with optional data (a clock widget opens the clock, a calendar widget the calendar).
+pub fn start_action(action: &str, data: Option<&str>) {
+    match data {
+        Some(d) => view_intent(action, d),
+        None => view_intent_plain(action),
+    }
+}

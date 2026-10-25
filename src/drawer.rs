@@ -251,12 +251,16 @@ impl Lumen {
             };
             let max_off = (content_h - body.height()).max(0.0);
             if let Some(o) = scroll_to {
-                self.scroller.jump_to(o.min(max_off));
+                self.scroller.scroll_to(o.min(max_off));
             }
             let dt = ui.ctx().input(|i| i.stable_dt).clamp(0.001, 0.05);
             self.scroller.exclude = if scrub { Some(Rect::from_min_max(pos2(right - 48.0, body.top()), pos2(right + 12.0, body.bottom()))) } else { None };
             self.scroller.update(ui.ctx(), body, max_off, !lifting && t > 0.98, dt);
             click_ok = click_ok && self.scroller.tap_ok();
+            // pulled down past the top: the drawer goes back down
+            if self.scroller.offset < -70.0 && self.scroller.holding_now && !lifting {
+                close = true;
+            }
             ui.scope_builder(UiBuilder::new().max_rect(body), |ui| {
                 ui.set_clip_rect(body);
                 {

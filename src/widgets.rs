@@ -270,11 +270,41 @@ pub fn glass(p: &Painter, rect: Rect, radius: f32, pal: &Palette) {
     p.rect_stroke(rect, cr(radius), Stroke::new(1.0, pal.glass_line), StrokeKind::Inside);
 }
 
+/// iOS 26 "Liquid Glass": a clear body, a bright light edge along the top that fades down the sides, a soft
+/// shadow edge at the bottom and a faint glow, so the panel reads as a thick lens over the wallpaper.
+pub fn liquid_glass(p: &Painter, rect: Rect, radius: f32, pal: &Palette) {
+    let r = radius.min(rect.height() / 2.0);
+    p.rect_filled(rect, cr(r), pal.glass);
+    if crate::perf::light() {
+        p.rect_stroke(rect, cr(r), Stroke::new(1.0, Color32::from_white_alpha(70)), StrokeKind::Inside);
+        return;
+    }
+    // glow on the upper half
+    let top = Rect::from_min_max(rect.min, pos2(rect.right(), rect.center().y));
+    p.rect_filled(top, CornerRadius { nw: r as u8, ne: r as u8, sw: 0, se: 0 }, Color32::from_white_alpha(16));
+    // soft dark rim at the bottom edge
+    let bot = Rect::from_min_max(pos2(rect.left(), rect.bottom() - r.min(14.0)), rect.max);
+    p.rect_filled(bot, CornerRadius { nw: 0, ne: 0, sw: r as u8, se: r as u8 }, Color32::from_black_alpha(14));
+    // light rim: bright on top, dimmer lower down
+    p.rect_stroke(rect, cr(r), Stroke::new(1.0, Color32::from_white_alpha(46)), StrokeKind::Inside);
+    p.rect_stroke(rect.shrink(1.0), cr((r - 1.0).max(0.0)), Stroke::new(1.0, Color32::from_white_alpha(18)), StrokeKind::Inside);
+    let n = 14;
+    for i in 0..n {
+        let t = i as f32 / n as f32;
+        let y = rect.top() + 0.5 + t * r * 0.9;
+        let inset = r - (r * r - (r - (y - rect.top())).max(0.0).powi(2)).max(0.0).sqrt();
+        let a = ((1.0 - t) * 150.0) as u8;
+        p.line_segment([pos2(rect.left() + inset + 1.0, y), pos2(rect.right() - inset - 1.0, y)], Stroke::new(1.0, Color32::from_white_alpha(a / 6)));
+    }
+    // the specular line on the very top edge
+    p.line_segment([pos2(rect.left() + r * 0.8, rect.top() + 0.8), pos2(rect.right() - r * 0.8, rect.top() + 0.8)], Stroke::new(1.4, Color32::from_white_alpha(120)));
+}
+
 pub fn search_pill(p: &Painter, rect: Rect, text: &str, cfg: &Config, pal: &Palette, trailing: bool) {
     if cfg.preset == Preset::Ios && rect.width() < 160.0 {
         // iOS: a small frosted capsule with a magnifier and "Search"
-        p.rect_filled(rect, cr(rect.height() / 2.0), Color32::from_black_alpha(70));
-        p.rect_filled(rect, cr(rect.height() / 2.0), Color32::from_white_alpha(38));
+        p.rect_filled(rect, cr(rect.height() / 2.0), Color32::from_black_alpha(40));
+        liquid_glass(p, rect, rect.height() / 2.0, pal);
         let font = fonts::body(cfg, rect.height() * 0.36, false);
         let tw = text_width(p, "Search", &font);
         let gw = rect.height() * 0.36;

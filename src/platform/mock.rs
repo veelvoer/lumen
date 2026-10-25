@@ -271,3 +271,7 @@ pub fn device_info() -> DeviceInfo {
 pub fn refresh_rate() -> f32 {
     60.0
 }
+
+pub fn start_action(a: &str, d: Option<&str>) {
+    log::info!("action {a} {d:?}");
+}

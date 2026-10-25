@@ -23,6 +23,11 @@ pub struct Scroller {
     pub respect_widgets: bool,
     /// presses that start here belong to something else (the letter scroller)
     pub exclude: Option<Rect>,
+    /// glide to this offset (letter scroller); any touch on the list cancels it
+    pub glide: Option<f32>,
+    /// lists made of egui widgets cannot draw past their ends: no bounce there
+    pub hard_ends: bool,
+    pub holding_now: bool,
     start: f32,
     start_x: f32,
     last: f32,
@@ -35,6 +40,10 @@ impl Scroller {
     /// False when the finger scrolled or only stopped a fling: then a release is not a tap.
     pub fn tap_ok(&self) -> bool {
         !self.moved && !self.suppress
+    }
+
+    pub fn scroll_to(&mut self, offset: f32) {
+        self.glide = Some(offset);
     }
 
     pub fn jump_to(&mut self, offset: f32) {
@@ -64,6 +73,26 @@ impl Scroller {
     pub fn step(&mut self, dt: f32, max: f32) -> bool {
         let max = max.max(0.0);
         let dt = dt.clamp(0.0, 0.05);
+        if let Some(t) = self.glide {
+            // critically damped glide, keeps its speed when the target moves under it
+            let t = t.clamp(0.0, max);
+            let w = std::f32::consts::TAU / 0.30;
+            let mut left = dt;
+            while left > 0.0 {
+                let h = left.min(1.0 / 240.0);
+                let a = -w * w * (self.offset - t) - 2.0 * w * self.vel;
+                self.vel += a * h;
+                self.offset += self.vel * h;
+                left -= h;
+            }
+            if (self.offset - t).abs() < 0.4 && self.vel.abs() < 8.0 {
+                self.offset = t;
+                self.vel = 0.0;
+                self.glide = None;
+                return false;
+            }
+            return true;
+        }
         if self.offset < 0.0 || self.offset > max {
             // beyond an end: a critically damped spring pulls it back, keeping any speed it arrived with
             let bound = if self.offset < 0.0 { 0.0 } else { max };
@@ -97,6 +126,7 @@ impl Scroller {
         let (pressed, down, pos, time) = ctx.input(|i| (i.pointer.primary_pressed(), i.pointer.primary_down(), i.pointer.latest_pos(), i.time));
         if pressed && enabled && pos.is_some_and(|p| area.contains(p) && !self.exclude.is_some_and(|e| e.contains(p))) {
             self.holding = true;
+            self.glide = None;
             self.moved = false;
             self.suppress = self.vel.abs() > 30.0;
             let y = pos.map(|p: Pos2| p.y).unwrap_or(0.0);
@@ -140,8 +170,17 @@ impl Scroller {
                 }
             }
         }
+        self.holding_now = self.holding;
         if !self.holding {
             busy |= self.step(dt, max);
+        }
+        if self.hard_ends {
+            if self.offset < 0.0 || self.offset > max {
+                self.offset = self.offset.clamp(0.0, max);
+                if !self.holding {
+                    self.vel = 0.0;
+                }
+            }
         }
         if busy {
             ctx.request_repaint();
@@ -156,7 +195,10 @@ pub fn show<R>(ui: &mut Ui, sc: &mut Scroller, salt: impl std::hash::Hash + std:
     let ctx = ui.ctx().clone();
     let dt = ctx.input(|i| i.stable_dt).clamp(0.001, 0.05);
     let max = sc.max;
-    sc.respect_widgets = true;
+    let tag = format!("{salt:?}");
+    // only settings pages hold sliders; elsewhere a press on a big touch area must still be able to scroll
+    sc.respect_widgets = tag.contains("settings");
+    sc.hard_ends = true;
     sc.update(&ctx, body, max, enabled, dt);
     let out = ScrollArea::vertical()
         .id_salt(salt)

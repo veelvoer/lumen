@@ -298,6 +298,8 @@ impl Lumen {
             busy |= g.t.step(dt, f.item);
         }
         self.ghosts.retain(|g| g.t.x < 0.97 || g.t.moving());
+        self.edit_t.target = if self.edit { 1.0 } else { 0.0 };
+        busy |= self.edit_t.step(dt, f.press);
         self.resume_t.target = 0.0;
         busy |= self.resume_t.step(dt, f.screen);
         self.menu_t.target = if self.menu.is_some() { 1.0 } else { 0.0 };
@@ -356,6 +358,7 @@ impl Lumen {
         let t_now = ctx.input(|i| i.time) as f32;
         let dragging_key = if let Touch::Drag(d) = &self.touch { Some(d.item.key()) } else { None };
         let edit = self.edit;
+        let edit_amp = self.edit_t.x.clamp(0.0, 1.0);
         let live_clock = self.clock.clone();
         let aw_rc = self.aw.clone();
         let aw_guard = aw_rc.borrow();
@@ -426,7 +429,7 @@ impl Lumen {
                     moving |= sp.step_to(target.min, dt, feel.item);
                     let cell = Rect::from_min_size(sp.pos(), target.size());
                     let sc = scale_sp.get(&key).map(|s| s.x).unwrap_or(1.0);
-                    let jig = if edit { jiggle(t_now, &key) } else { 0.0 };
+                    let jig = jiggle(t_now, &key) * edit_amp;
                     paint_item(p, &pl.item, cell, &icon_rect, &cfg, &pal, &mut icons, &find, &badges, &live, sc, jig, 1.0, true, sc > 1.05, &mut labels);
                     if edit && dragging_key.as_deref() != Some(key.as_str()) {
                         paint_remove_badge(p, &pl.item, cell, &icon_rect, &cfg, &pal);
@@ -477,6 +480,7 @@ impl Lumen {
         page: f32,
     ) {
         let screen = geo.screen;
+        let edit_amp = self.edit_t.x.clamp(0.0, 1.0);
         let feel = self.feel;
         let find = |pkg: &str| by_pkg.get(pkg).map(|&i| &apps[i]);
         let dock_icon = |c: Rect| {
@@ -491,7 +495,9 @@ impl Lumen {
                 return;
             }
             if cfg.dock != DockStyle::Bare {
-                if cfg.dock == DockStyle::Glass {
+                if cfg.dock == DockStyle::Glass && cfg.preset == Preset::Ios {
+                    widgets::liquid_glass(p, geo.dock, cfg.dock_radius, pal);
+                } else if cfg.dock == DockStyle::Glass {
                     widgets::glass(p, geo.dock, cfg.dock_radius, pal);
                 } else {
                     p.rect_filled(geo.dock, cr(cfg.dock_radius), pal.sheet);
@@ -506,7 +512,7 @@ impl Lumen {
                 moving |= sp.step_to(slot.min, dt, feel.item);
                 let cell = Rect::from_min_size(sp.pos(), slot.size());
                 let sc = scale_sp.get(&key).map(|s| s.x).unwrap_or(1.0);
-                let jig = if edit { jiggle(t_now, &key) } else { 0.0 };
+                let jig = jiggle(t_now, &key) * edit_amp;
                 paint_item(p, it, cell, &dock_icon, cfg, pal, &mut icons, &find, &badges, live, sc, jig, 1.0, cfg.dock_labels, sc > 1.05, &mut labels);
                 if edit {
                     paint_remove_badge(p, it, cell, &dock_icon, cfg, pal);
@@ -730,7 +736,7 @@ impl Lumen {
         let center = d.pos - d.grab;
         let (sw, sh) = d.item.span(cfg.cols);
         let size = match &d.item {
-            Item::Widget { .. } => vec2(sw.min(cfg.cols) as f32 * geo.cell.x, sh.min(cfg.rows) as f32 * geo.cell.y),
+            Item::Widget { .. } | Item::AppWidget { .. } => vec2(sw.min(cfg.cols) as f32 * geo.cell.x, sh.min(cfg.rows) as f32 * geo.cell.y),
             _ => vec2(cfg.eff(), cfg.eff()),
         };
         let whole = Rect::from_center_size(center, size * 1.1);
@@ -770,7 +776,7 @@ impl Lumen {
         if self.cfg.dock_items.iter().any(|i| i.key() == key) {
             return Some(self.dock_icon_rect(r));
         }
-        let widget = self.cfg.pages.iter().flat_map(|p| p.items.iter()).any(|p| p.item.key() == key && matches!(p.item, Item::Widget { .. }));
+        let widget = self.cfg.pages.iter().flat_map(|p| p.items.iter()).any(|p| p.item.key() == key && matches!(p.item, Item::Widget { .. } | Item::AppWidget { .. }));
         Some(if widget { r } else { self.icon_rect(r) })
     }
 
@@ -822,7 +828,7 @@ impl Lumen {
 
     fn icon_rect_for(&self, item: &Item, cell: Rect) -> Rect {
         match item {
-            Item::Widget { .. } => cell,
+            Item::Widget { .. } | Item::AppWidget { .. } => cell,
             _ => self.icon_rect(cell),
         }
     }
@@ -1013,6 +1019,10 @@ impl Lumen {
         let w = geo.screen.width();
         let h = geo.screen.height();
         let count = self.page_count().max(1);
+        if !matches!(self.touch, Touch::Idle | Touch::Spent) || self.edit {
+            // frames follow the finger, not the speed at which touch events happen to arrive
+            ctx.request_repaint();
+        }
         if !matches!(self.touch, Touch::Down { .. }) {
             self.press_key = None;
         }
@@ -1187,8 +1197,19 @@ impl Lumen {
                             self.haptic(Haptic::Tick);
                         }
                         Item::Widget { kind, .. } => {
-                            if kind == WidgetKind::SearchBar {
-                                self.open_search();
+                            // a Lumen widget opens the app it stands for
+                            let (action, data): (Option<&str>, Option<&str>) = match kind {
+                                WidgetKind::SearchBar => (None, None),
+                                WidgetKind::Calendar | WidgetKind::DotDate => (Some("android.intent.action.VIEW"), Some("content://com.android.calendar/time")),
+                                WidgetKind::Battery | WidgetKind::DotBattery => (Some("android.intent.action.POWER_USAGE_SUMMARY"), None),
+                                _ => (Some("android.intent.action.SHOW_ALARMS"), None),
+                            };
+                            match action {
+                                None => self.open_search(),
+                                Some(a) => {
+                                    let (a, d) = (a.to_string(), data.map(String::from));
+                                    crate::bridge::bg(move || platform::start_action(&a, d.as_deref()));
+                                }
                             }
                         }
                         Item::AppWidget { wid, .. } => {
@@ -1353,7 +1374,7 @@ impl Lumen {
         }
         if hover == Hover::None {
             let n = self.cfg.dock_items.len();
-            let is_widget = matches!(d.item, Item::Widget { .. });
+            let is_widget = matches!(d.item, Item::Widget { .. } | Item::AppWidget { .. });
             if geo.dock.expand2(vec2(0.0, 18.0)).contains(pos) && !is_widget {
                 // slot under the finger
                 let total = geo.dock_slot_w * (n.max(1)) as f32;
@@ -1445,7 +1466,7 @@ impl Lumen {
                 placed = self.merge_into(&key, &item)
             }
             Hover::Dock(idx) => {
-                if !matches!(item, Item::Widget { .. }) && self.cfg.dock_items.len() < self.cfg.dock_slots {
+                if !matches!(item, Item::Widget { .. } | Item::AppWidget { .. }) && self.cfg.dock_items.len() < self.cfg.dock_slots {
                     let at = idx.min(self.cfg.dock_items.len());
                     self.cfg.remove_app_if_app(&item);
                     self.cfg.dock_items.insert(at, item.clone());
@@ -1470,7 +1491,7 @@ impl Lumen {
             let off = match d.hover {
                 Hover::Dock(_) => self.dock_icon_rect(Rect::from_min_size(Pos2::ZERO, vec2(geo.dock_slot_w, geo.dock.height()))).center().to_vec2(),
                 _ => match item {
-                    Item::Widget { .. } => vec2(geo.cell.x, geo.cell.y) * (item.span(self.cfg.cols).0 as f32 / 2.0).max(0.5),
+                    Item::Widget { .. } | Item::AppWidget { .. } => vec2(geo.cell.x, geo.cell.y) * (item.span(self.cfg.cols).0 as f32 / 2.0).max(0.5),
                     _ => self.icon_rect(dummy).center().to_vec2(),
                 },
             };
@@ -1660,7 +1681,7 @@ fn paint_item<'a>(
 
 fn paint_remove_badge(p: &Painter, item: &Item, cell: Rect, icon_rect: &dyn Fn(Rect) -> Rect, _cfg: &crate::config::Config, _pal: &crate::theme::Palette) {
     let ir = match item {
-        Item::Widget { .. } => cell.shrink(6.0),
+        Item::Widget { .. } | Item::AppWidget { .. } => cell.shrink(6.0),
         _ => icon_rect(cell),
     };
     let c = ir.left_top() + vec2(2.0, 2.0);
@@ -1742,8 +1763,10 @@ fn page_effect(e: PageEffect, d: f32, w: f32) -> (f32, f32, f32) {
 
 /// Each item sways a little differently, so the edit mode looks alive.
 fn jiggle(t: f32, key: &str) -> f32 {
+    // iOS: about two degrees, 7 or 8 swings a second, every icon a little out of step
     let phase = key.bytes().fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(b as u32)) as f32 * 0.37;
-    (t * 15.0 + phase).sin() * 0.03
+    let f = 1.0 + (phase.sin() * 0.08);
+    ((t * 47.0 * f + phase).sin() * 0.034) + ((t * 31.0 + phase * 1.7).sin() * 0.006)
 }
 
 /// A transformed, faded painting layer. Layers are areas so their stacking order is stable.

@@ -80,7 +80,7 @@ impl Bridge {
             let mut last_slow = Instant::now();
             let mut blur = -1;
             loop {
-                match rx.recv_timeout(Duration::from_millis(120)) {
+                match rx.recv_timeout(Duration::from_millis(350)) {
                     Ok(cmd) => match cmd {
                         Cmd::Run(f) => f(),
                         Cmd::Blur(px) => {
@@ -100,7 +100,7 @@ impl Bridge {
                     Err(RecvTimeoutError::Timeout) => {}
                     Err(RecvTimeoutError::Disconnected) => return,
                 }
-                let slow = last_slow.elapsed() > Duration::from_secs(2);
+                let slow = last_slow.elapsed() > Duration::from_secs(4);
                 if slow {
                     last_slow = Instant::now();
                 }

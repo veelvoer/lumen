@@ -242,7 +242,9 @@ pub fn insets() -> Insets {
         }
         let sb = env.call_static_method("android/view/WindowInsets$Type", "systemBars", "()I", &[])?.i()?;
         let dc = env.call_static_method("android/view/WindowInsets$Type", "displayCutout", "()I", &[])?.i()?;
-        let ins = env.call_method(&wi, "getInsets", "(I)Landroid/graphics/Insets;", &[JValue::Int(sb | dc)])?.l()?;
+        let ime = env.call_static_method("android/view/WindowInsets$Type", "ime", "()I", &[])?.i()?;
+        // the keyboard counts as bottom space, so search fields rise above it
+        let ins = env.call_method(&wi, "getInsets", "(I)Landroid/graphics/Insets;", &[JValue::Int(sb | dc | ime)])?.l()?;
         let g = |env: &mut JNIEnv, n: &str| env.get_field(&ins, n, "I").and_then(|v| v.i()).map(|v| v as f32);
         Ok(Insets { left: g(env, "left")?, top: g(env, "top")?, right: g(env, "right")?, bottom: g(env, "bottom")? })
     })
@@ -398,7 +400,8 @@ pub fn load_icon(a: &App, px: i32, want_mono: bool) -> Option<RawIcon> {
             let layers: Vec<&JObject> = [&bg, &fg].into_iter().filter(|d| !d.is_null()).collect();
             let mut rgba = render_layers(env, px, &layers, bounds, None)?;
             if want_mono {
-                gray(&mut rgba);
+                glyph_from_icon(&mut rgba);
+                return Ok(RawIcon { size: px as usize, rgba, mono: true });
             }
             return Ok(RawIcon { size: px as usize, rgba, mono: false });
         }
@@ -407,12 +410,58 @@ pub fn load_icon(a: &App, px: i32, want_mono: bool) -> Option<RawIcon> {
         let inset = px * 14 / 100;
         let mut rgba = render_layers(env, px, &[&dr], [inset, inset, px - inset, px - inset], Some(0xFFF1F1F1u32 as i32))?;
         if want_mono {
-            gray(&mut rgba);
+            glyph_from_icon(&mut rgba);
+            return Ok(RawIcon { size: px as usize, rgba, mono: true });
         }
         Ok(RawIcon { size: px as usize, rgba, mono: false })
     })
 }
 
+/// Turns a colored icon into a single-color glyph: the details that stand out from the icon's own
+/// background become the glyph (bright details on a dark icon, dark details on a light icon).
+fn glyph_from_icon(rgba: &mut [u8]) {
+    let luma = |p: &[u8]| -> f32 {
+        let a = (p[3] as f32).max(1.0);
+        ((p[0] as f32 * 0.30 + p[1] as f32 * 0.59 + p[2] as f32 * 0.11) / a).clamp(0.0, 1.0)
+    };
+    let mut sum = 0.0;
+    let mut n = 0.0;
+    for p in rgba.chunks_exact(4) {
+        if p[3] > 200 {
+            sum += luma(p);
+            n += 1.0;
+        }
+    }
+    let light = n > 0.0 && sum / n > 0.55;
+    let mut hist = [0u32; 64];
+    let t_of = |p: &[u8]| -> f32 { let l = luma(p); if light { 1.0 - l } else { l } };
+    for p in rgba.chunks_exact(4) {
+        if p[3] > 200 {
+            hist[((t_of(p) * 63.0) as usize).min(63)] += 1;
+        }
+    }
+    let total: u32 = hist.iter().sum();
+    let (mut acc, mut lo, mut hi) = (0u32, 0usize, 63usize);
+    for (i, h) in hist.iter().enumerate() {
+        acc += h;
+        if acc * 100 < total * 8 {
+            lo = i;
+        }
+        if acc * 100 <= total * 94 {
+            hi = i;
+        }
+    }
+    let (lo, hi) = (lo as f32 / 63.0, (hi.max(lo + 4)) as f32 / 63.0);
+    for p in rgba.chunks_exact_mut(4) {
+        let a = p[3] as f32 / 255.0;
+        let t = ((t_of(p) - lo) / (hi - lo)).clamp(0.0, 1.0);
+        let t = t * t * (3.0 - 2.0 * t);
+        let v = (a * t * 255.0) as u8;
+        p.copy_from_slice(&[v, v, v, v]);
+    }
+}
+
+#[allow(dead_code)]
 fn gray(rgba: &mut [u8]) {
     for px in rgba.chunks_exact_mut(4) {
         let g = ((px[0] as u32 * 30 + px[1] as u32 * 59 + px[2] as u32 * 11) / 100) as u8;
@@ -443,10 +492,22 @@ pub fn expand_notifications() {
 }
 
 fn glue<'a>(env: &mut JNIEnv<'a>, act: &JObject, name: &str) -> JResult<jni::objects::JClass<'a>> {
-    // Native threads only see system classes, so ask the app's own class loader for ours.
+    // Native threads only see system classes, so ask the app's own class loader for ours (once).
+    static CACHE: std::sync::Mutex<Vec<(String, GlobalRef)>> = std::sync::Mutex::new(Vec::new());
+    if let Ok(c) = CACHE.lock() {
+        if let Some((_, g)) = c.iter().find(|(n, _)| n == name) {
+            let local = env.new_local_ref(g.as_obj())?;
+            return Ok(jni::objects::JClass::from(local));
+        }
+    }
     let loader = env.call_method(act, "getClassLoader", "()Ljava/lang/ClassLoader;", &[])?.l()?;
     let n = env.new_string(name)?;
     let cls = env.call_method(&loader, "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;", &[JValue::Object(&n)])?.l()?;
+    if let Ok(g) = env.new_global_ref(&cls) {
+        if let Ok(mut c) = CACHE.lock() {
+            c.push((name.to_string(), g));
+        }
+    }
     Ok(jni::objects::JClass::from(cls))
 }
 

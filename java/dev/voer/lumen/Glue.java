@@ -138,6 +138,58 @@ public final class Glue {
         });
     }
 
+    static volatile String wallpaperError = "";
+
+    /** The system wallpaper scaled to at most maxPx on its long side, or null when Android does not let us read it. */
+    public static android.graphics.Bitmap wallpaper(Activity a, int maxPx) {
+        try {
+            WallpaperManager wm = WallpaperManager.getInstance(a);
+            android.graphics.drawable.Drawable d = wm.getDrawable();
+            if (d == null) { wallpaperError = "no drawable"; return null; }
+            int w = Math.max(1, d.getIntrinsicWidth()), h = Math.max(1, d.getIntrinsicHeight());
+            float s = Math.min(1f, (float) maxPx / Math.max(w, h));
+            int bw = Math.max(1, Math.round(w * s)), bh = Math.max(1, Math.round(h * s));
+            android.graphics.Bitmap b = android.graphics.Bitmap.createBitmap(bw, bh, android.graphics.Bitmap.Config.ARGB_8888);
+            android.graphics.Canvas c = new android.graphics.Canvas(b);
+            d.setBounds(0, 0, bw, bh);
+            d.draw(c);
+            wallpaperError = "";
+            return b;
+        } catch (Throwable t) {
+            wallpaperError = String.valueOf(t);
+            return null;
+        }
+    }
+
+    public static boolean wallpaperAccess(Activity a) {
+        try {
+            if (Build.VERSION.SDK_INT >= 30) return android.os.Environment.isExternalStorageManager();
+            return a.checkSelfPermission(android.Manifest.permission.READ_EXTERNAL_STORAGE) == android.content.pm.PackageManager.PERMISSION_GRANTED;
+        } catch (Throwable t) { return false; }
+    }
+
+    public static void requestWallpaperAccess(final Activity a) {
+        a.runOnUiThread(new Runnable() {
+            @Override public void run() {
+                try {
+                    if (Build.VERSION.SDK_INT >= 30) {
+                        android.content.Intent i = new android.content.Intent(android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, android.net.Uri.parse("package:" + a.getPackageName()));
+                        i.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+                        a.startActivity(i);
+                    } else {
+                        a.requestPermissions(new String[]{android.Manifest.permission.READ_EXTERNAL_STORAGE}, 1);
+                    }
+                } catch (Throwable ignored) {}
+            }
+        });
+    }
+
+    public static boolean wallpaperLive(Activity a) {
+        try { return WallpaperManager.getInstance(a).getWallpaperInfo() != null; } catch (Throwable t) { return false; }
+    }
+
+    public static String wallpaperError() { return wallpaperError; }
+
     public static boolean takeSettings() {
         boolean was = LumenActivity.settingsRequested;
         LumenActivity.settingsRequested = false;

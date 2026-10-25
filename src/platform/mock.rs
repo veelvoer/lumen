@@ -275,3 +275,36 @@ pub fn refresh_rate() -> f32 {
 pub fn start_action(a: &str, d: Option<&str>) {
     log::info!("action {a} {d:?}");
 }
+
+pub fn wallpaper_image(_: i32) -> Result<(usize, usize, Vec<u8>), String> {
+    // the same orange to purple the screenshot tests draw, with a few bright shapes so the glass has something to bend
+    let (w, h) = (360usize, 780usize);
+    let mut v = vec![255u8; w * h * 4];
+    for y in 0..h {
+        let t = y as f32 / h as f32;
+        for x in 0..w {
+            let mut c = [250.0 + (90.0 - 250.0) * t, 140.0 + (50.0 - 140.0) * t, 80.0 + (170.0 - 80.0) * t];
+            for (cx, cy, r, col) in [(80.0, 600.0, 70.0, [255.0, 240.0, 120.0]), (260.0, 700.0, 50.0, [120.0, 220.0, 255.0]), (180.0, 520.0, 40.0, [255.0, 255.0, 255.0])] {
+                let d = (((x as f32 - cx).powi(2) + (y as f32 - cy).powi(2)) as f32).sqrt();
+                if d < r {
+                    let k = ((r - d) / 12.0).clamp(0.0, 1.0);
+                    for i in 0..3 {
+                        c[i] = c[i] * (1.0 - k) + col[i] * k;
+                    }
+                }
+            }
+            let o = (y * w + x) * 4;
+            v[o] = c[0] as u8;
+            v[o + 1] = c[1] as u8;
+            v[o + 2] = c[2] as u8;
+        }
+    }
+    Ok((w, h, v))
+}
+pub fn wallpaper_access() -> bool {
+    true
+}
+pub fn request_wallpaper_access() {}
+pub fn wallpaper_live() -> bool {
+    false
+}

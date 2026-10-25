@@ -272,8 +272,14 @@ pub fn glass(p: &Painter, rect: Rect, radius: f32, pal: &Palette) {
 
 /// iOS 26 "Liquid Glass": a clear body, a bright light edge along the top that fades down the sides, a soft
 /// shadow edge at the bottom and a faint glow, so the panel reads as a thick lens over the wallpaper.
-pub fn liquid_glass(p: &Painter, rect: Rect, radius: f32, pal: &Palette) {
+pub fn liquid_glass(p: &Painter, rect: Rect, radius: f32, pal: &Palette, name: &str) {
     let r = radius.min(rect.height() / 2.0);
+    if let Some((tex, uv)) = crate::glass::lookup(name) {
+        // the baked lens: blurred, refracted wallpaper with light on its rim; only the hairline edge is vector
+        p.image(tex, rect, uv, Color32::WHITE);
+        p.rect_stroke(rect, cr(r), Stroke::new(0.8, Color32::from_white_alpha(38)), StrokeKind::Inside);
+        return;
+    }
     p.rect_filled(rect, cr(r), pal.glass);
     if crate::perf::light() {
         p.rect_stroke(rect, cr(r), Stroke::new(1.0, Color32::from_white_alpha(70)), StrokeKind::Inside);
@@ -304,7 +310,7 @@ pub fn search_pill(p: &Painter, rect: Rect, text: &str, cfg: &Config, pal: &Pale
     if cfg.preset == Preset::Ios && rect.width() < 160.0 {
         // iOS: a small frosted capsule with a magnifier and "Search"
         p.rect_filled(rect, cr(rect.height() / 2.0), Color32::from_black_alpha(40));
-        liquid_glass(p, rect, rect.height() / 2.0, pal);
+        liquid_glass(p, rect, rect.height() / 2.0, pal, "pill");
         let font = fonts::body(cfg, rect.height() * 0.36, false);
         let tw = text_width(p, "Search", &font);
         let gw = rect.height() * 0.36;

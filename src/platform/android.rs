@@ -994,3 +994,43 @@ pub fn start_action(action: &str, data: Option<&str>) {
         None => view_intent_plain(action),
     }
 }
+
+/// The system wallpaper as RGBA (width in `size`), if Android allows reading it.
+pub fn wallpaper_image(max_px: i32) -> Result<(usize, usize, Vec<u8>), String> {
+    let r = with(|env, act| {
+        let cls = glue(env, act, "dev.voer.lumen.Glue")?;
+        let b = env.call_static_method(&cls, "wallpaper", "(Landroid/app/Activity;I)Landroid/graphics/Bitmap;", &[JValue::Object(act), JValue::Int(max_px)])?.l()?;
+        if b.is_null() {
+            let e = env.call_static_method(&cls, "wallpaperError", "()Ljava/lang/String;", &[])?.l()?;
+            return Ok(Err(jstr(env, &e)));
+        }
+        let (w, h) = (env.call_method(&b, "getWidth", "()I", &[])?.i()? as usize, env.call_method(&b, "getHeight", "()I", &[])?.i()? as usize);
+        let ic = bitmap_to_icon(env, &b)?;
+        Ok(Ok((w, h, ic.rgba)))
+    });
+    r.unwrap_or_else(|| Err("jni failed".into()))
+}
+
+pub fn wallpaper_access() -> bool {
+    with(|env, act| {
+        let cls = glue(env, act, "dev.voer.lumen.Glue")?;
+        env.call_static_method(&cls, "wallpaperAccess", "(Landroid/app/Activity;)Z", &[JValue::Object(act)])?.z()
+    })
+    .unwrap_or(false)
+}
+
+pub fn request_wallpaper_access() {
+    with(|env, act| {
+        let cls = glue(env, act, "dev.voer.lumen.Glue")?;
+        env.call_static_method(&cls, "requestWallpaperAccess", "(Landroid/app/Activity;)V", &[JValue::Object(act)])?;
+        Ok(())
+    });
+}
+
+pub fn wallpaper_live() -> bool {
+    with(|env, act| {
+        let cls = glue(env, act, "dev.voer.lumen.Glue")?;
+        env.call_static_method(&cls, "wallpaperLive", "(Landroid/app/Activity;)Z", &[JValue::Object(act)])?.z()
+    })
+    .unwrap_or(false)
+}

@@ -138,8 +138,8 @@ impl Lumen {
 
     pub fn drawer_ui(&mut self, ctx: &Context, screen: Rect) {
         let t = self.drawer;
-        let ease = 1.0 - (1.0 - t).powi(3);
-        let y = screen.top() + (1.0 - ease) * screen.height();
+        // one to one with the finger while dragging: the sheet's top edge stays under it
+        let y = screen.top() + (1.0 - t.min(1.02)) * screen.height();
         let rect = Rect::from_min_size(pos2(screen.left(), y), screen.size());
         let k = ctx.pixels_per_point();
         let (il, it, ir, ib) = (self.insets.left / k, self.insets.top / k, self.insets.right / k, self.insets.bottom / k);
@@ -407,13 +407,13 @@ impl Lumen {
                     let pos = pos2(strip.center().x - 58.0 * bump, cy);
                     let hot = i == cur && act > 0.1;
                     let col = if hot { pal.accent } else { pal.dim.gamma_multiply(1.0 - 0.35 * bump).to_opaque().gamma_multiply(0.55 + 0.45 * bump) };
-                    painter.text(pos, Align2::CENTER_CENTER, c.to_string(), fonts::body(&cfg, 10.5 + 13.0 * bump, hot), if hot { pal.accent } else { col });
+                    painter.text(pos, Align2::CENTER_CENTER, c.to_string(), fonts::body(&cfg, [11.0, 12.5, 14.0, 16.5, 19.5, 23.0][((bump * 5.99) as usize).min(5)], hot), if hot { pal.accent } else { col });
                 }
                 if act > 0.02 {
                     let letter = letters[cur];
                     let c = pos2(strip.center().x - 112.0 * act, st.y.x);
                     painter.circle_filled(c, 34.0 * act, pal.accent.gamma_multiply(act));
-                    painter.text(c, Align2::CENTER_CENTER, letter.to_string(), fonts::body(&cfg, 34.0 * act, true), pal.on_accent.gamma_multiply(act));
+                    painter.text(c, Align2::CENTER_CENTER, letter.to_string(), fonts::body(&cfg, 34.0, true), pal.on_accent.gamma_multiply(act));
                 }
                 if down && st.last != Some(cur) {
                     if st.last.is_some() {
@@ -502,9 +502,16 @@ impl Lumen {
         let time = ctx.input(|i| i.time);
         let click_ok = time > self.suppress_click;
         let mut search_sc = std::mem::take(&mut self.search_scroller);
+        // Spotlight opens out of the Search capsule and folds back into it
+        let st = self.search_t.x.clamp(0.0, 1.0);
+        let from = self.search_from.unwrap_or(Rect::from_center_size(screen.center(), vec2(80.0, 30.0)));
+        let sc = 0.22 + 0.78 * self.search_t.x.clamp(0.0, 1.05);
+        let ctr = from.center() + (screen.center() - from.center()) * self.search_t.x.clamp(0.0, 1.05);
+        ctx.set_transform_layer(egui::LayerId::new(Order::Foreground, Id::new("search")), egui::emath::TSTransform::new(ctr.to_vec2() - screen.center().to_vec2() * sc, sc));
         Area::new(Id::new("search")).order(Order::Foreground).fixed_pos(screen.min).show(ctx, |ui| {
             let ios = cfg.preset == Preset::Ios;
-            ui.painter().rect_filled(screen, 0, if ios { Color32::from_black_alpha(190) } else { pal.sheet });
+            ui.set_opacity((st * 1.7).min(1.0));
+            ui.painter().rect_filled(screen, cr(36.0 * (1.0 - st) + 0.01), if ios { Color32::from_black_alpha(190) } else { pal.sheet });
             ui.allocate_rect(screen, Sense::click_and_drag());
             let top = screen.top() + it.max(10.0) + 10.0;
             let bar = Rect::from_min_size(pos2(screen.left() + 16.0, top), vec2(screen.width() - 32.0 - 72.0, 46.0));

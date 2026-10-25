@@ -177,6 +177,7 @@ impl Lumen {
             self.step_springs(ctx, dt);
         }
         self.track_items(&geo);
+        self.bake_glass(ctx, &geo);
         // the root ui must be claimed, everything is painted in layers
         egui::CentralPanel::default().frame(Frame::NONE).show(root, |_| {});
         let covered = self.drawer >= 0.995 && self.screen == Screen::Home;
@@ -193,7 +194,7 @@ impl Lumen {
             if self.drawer > 0.001 {
                 self.drawer_ui(ctx, screen);
             }
-            if self.search_open {
+            if self.search_open || self.search_t.x > 0.01 {
                 self.search_ui(ctx, screen);
             }
             if self.menu.is_some() {
@@ -298,6 +299,8 @@ impl Lumen {
             busy |= g.t.step(dt, f.item);
         }
         self.ghosts.retain(|g| g.t.x < 0.97 || g.t.moving());
+        self.search_t.target = if self.search_open { 1.0 } else { 0.0 };
+        busy |= self.search_t.step(dt, f.popup);
         self.edit_t.target = if self.edit { 1.0 } else { 0.0 };
         busy |= self.edit_t.step(dt, f.press);
         self.resume_t.target = 0.0;
@@ -496,7 +499,7 @@ impl Lumen {
             }
             if cfg.dock != DockStyle::Bare {
                 if cfg.dock == DockStyle::Glass && cfg.preset == Preset::Ios {
-                    widgets::liquid_glass(p, geo.dock, cfg.dock_radius, pal);
+                    widgets::liquid_glass(p, geo.dock, cfg.dock_radius, pal, "dock");
                 } else if cfg.dock == DockStyle::Glass {
                     widgets::glass(p, geo.dock, cfg.dock_radius, pal);
                 } else {
@@ -679,10 +682,13 @@ impl Lumen {
         }
         let pal = self.pal;
         let (panel, title, cells) = self.popup_geo(geo, pkgs.len());
-        let origin = self.folder_origin.map(|r| r.center()).unwrap_or(panel.center());
-        let s = 0.22 + 0.78 * t;
-        let xf = egui::emath::TSTransform::new(origin.to_vec2() * (1.0 - s), s);
-        let alpha = (t * 2.2).clamp(0.0, 1.0);
+        // the panel grows out of the folder icon: its rectangle and corner radius morph from the icon's to the panel's
+        let from = self.folder_origin.unwrap_or(Rect::from_center_size(panel.center(), panel.size() * 0.3));
+        let s = (from.width() / panel.width()) + (1.0 - from.width() / panel.width()) * t;
+        let ctr = from.center() + (panel.center() - from.center()) * t;
+        let xf = egui::emath::TSTransform::new(ctr.to_vec2() - panel.center().to_vec2() * s, s);
+        let icon_r = widgets::plate_radius(&self.cfg, from.width());
+        let alpha = (t * 1.6).clamp(0.0, 1.0);
         let cfg = self.cfg.clone();
         let mut icons = self.icons.take().unwrap();
         let ios = cfg.preset == Preset::Ios;
@@ -694,7 +700,9 @@ impl Lumen {
         });
         layer(ctx, "popup", 0, screen, xf, alpha, |p| {
             let panel_fill = if ios { Color32::from_rgba_unmultiplied(70, 70, 80, 215) } else { pal.sheet };
-            p.rect_filled(panel, cr(if ios { 34.0 } else { 36.0 }), panel_fill);
+            let target_r = if ios { 34.0 } else { 36.0 };
+            let r_now = (icon_r + (target_r - icon_r) * t.clamp(0.0, 1.0)) / s.max(0.05);
+            p.rect_filled(panel, cr(r_now), panel_fill);
             p.text(title.center_top() + vec2(0.0, 12.0), Align2::CENTER_TOP, &name, fonts::body(&cfg, 20.0, true), tcol);
             for (pkg, cell) in pkgs.iter().zip(cells.iter()) {
                 let Some(&ai) = self.by_pkg.get(pkg) else { continue };
@@ -1081,7 +1089,7 @@ impl Lumen {
                     } else if d.y < 0.0 {
                         if self.cfg.swipe_up == Action::Drawer {
                             self.touch = Touch::DrawerPull;
-                            self.drawer = (-d.y / (h * 0.55)).clamp(0.0, 1.0);
+                            self.drawer = (-d.y / h).clamp(0.0, 1.0);
                         } else {
                             self.run_action(ctx, self.cfg.swipe_up);
                             self.touch = Touch::Spent;
@@ -1117,9 +1125,9 @@ impl Lumen {
                 }
             }
             Touch::DrawerPull => {
-                self.drawer = (self.drawer - delta.y / (h * 0.55)).clamp(0.0, 1.0);
+                self.drawer = (self.drawer - delta.y / h).clamp(0.0, 1.0);
                 if !down {
-                    let v = -vel.y / (h * 0.55);
+                    let v = -vel.y / h;
                     self.drawer_v = v;
                     self.drawer_open = self.drawer + v * 0.18 > 0.5;
                     self.touch = Touch::Idle;
@@ -1224,7 +1232,10 @@ impl Lumen {
             }
             Hit::FolderApp(_, pkg) | Hit::LibraryApp(pkg) => self.launch(ctx, &pkg),
             Hit::LibraryGroup(cat) => self.open_category = Some(cat),
-            Hit::Search => self.open_search(),
+            Hit::Search => {
+                self.search_from = geo.search;
+                self.open_search()
+            }
             Hit::None => {
                 if self.open_folder.is_some() || self.open_category.is_some() {
                     self.open_folder = None;
@@ -1766,7 +1777,7 @@ fn jiggle(t: f32, key: &str) -> f32 {
     // iOS: about two degrees, 7 or 8 swings a second, every icon a little out of step
     let phase = key.bytes().fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(b as u32)) as f32 * 0.37;
     let f = 1.0 + (phase.sin() * 0.08);
-    ((t * 47.0 * f + phase).sin() * 0.034) + ((t * 31.0 + phase * 1.7).sin() * 0.006)
+    ((t * 66.0 * f + phase).sin() * 0.036) + ((t * 43.0 + phase * 1.7).sin() * 0.008)
 }
 
 /// A transformed, faded painting layer. Layers are areas so their stacking order is stable.

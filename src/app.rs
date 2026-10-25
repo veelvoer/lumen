@@ -153,6 +153,10 @@ pub struct Lumen {
     pub pal: Palette,
     pub phone_colors: Option<Dynamic>,
     pub font_scripts: u8,
+    pub glass: crate::glass::Glass,
+    pub wallpaper_access: bool,
+    pub wallpaper_live: bool,
+    probed: bool,
     pub device: crate::platform::DeviceInfo,
     pub gpu: String,
     /// light mode is on: fewer effects, so weak phones stay smooth
@@ -214,6 +218,8 @@ pub struct Lumen {
     /// patch notes being shown: (version, lines)
     pub whats_new: Option<Vec<(String, Vec<String>)>>,
     pub notes_t: Spring,
+    pub search_t: Spring,
+    pub search_from: Option<Rect>,
     pub picker_tab: u8,
     pub search_open: bool,
     pub query: String,
@@ -259,6 +265,10 @@ impl Lumen {
             pal,
             phone_colors,
             font_scripts: 0,
+            glass: Default::default(),
+            wallpaper_access: false,
+            wallpaper_live: false,
+            probed: false,
             device: platform::device_info(),
             gpu: String::new(),
             light: false,
@@ -315,6 +325,8 @@ impl Lumen {
             widget_picker: false,
             whats_new: None,
             notes_t: Spring::at(0.0),
+            search_t: Spring::at(0.0),
+            search_from: None,
             picker_tab: 1,
             search_open: false,
             query: String::new(),
@@ -502,6 +514,19 @@ impl Lumen {
         // everything the phone tells us arrives from the background worker; nothing here can stall a frame
         let snap: Snapshot = self.bridge.snapshot();
         if snap.battery.is_some() {
+            self.wallpaper_access = snap.wallpaper_access;
+            self.wallpaper_live = snap.wallpaper_live;
+        }
+        // real Liquid Glass needs the wallpaper: only when allowed, not live, and the phone can afford it
+        let want_glass = self.cfg.real_glass && !self.light && self.wallpaper_access && !self.wallpaper_live;
+        if want_glass {
+            self.glass.start(ctx);
+            self.glass.poll();
+        } else if self.glass.active() || self.glass.status == "on" {
+            self.glass.reset();
+            self.glass.status.clear();
+        }
+        if snap.battery.is_some() {
             self.default_home = snap.default_home;
         }
         if snap.refresh_hz >= 30.0 {
@@ -659,6 +684,26 @@ impl Lumen {
         }
     }
 
+    /// Bakes the glass panels of this frame (iOS dock and search capsule) when the wallpaper is readable.
+    pub fn bake_glass(&mut self, ctx: &Context, geo: &crate::home::Geo) {
+        crate::glass::clear_ready();
+        if !self.glass.active() || self.cfg.preset != Preset::Ios {
+            return;
+        }
+        let count = self.page_count().max(2) as f32 - 1.0;
+        let pan = if self.cfg.wallpaper_scroll { (self.page / count).clamp(0.0, 1.0) } else { 0.5 };
+        let dark = self.dark();
+        let tint = if dark { egui::Color32::from_rgba_unmultiplied(24, 24, 34, 46) } else { egui::Color32::from_rgba_unmultiplied(255, 255, 255, 60) };
+        if self.cfg.dock == crate::config::DockStyle::Glass {
+            self.glass.bake(ctx, "dock", geo.dock, self.cfg.dock_radius, geo.screen, pan, tint, dark);
+        }
+        if let Some(s) = geo.search {
+            if s.width() < 160.0 {
+                self.glass.bake(ctx, "pill", s, s.height() / 2.0, geo.screen, pan, tint, dark);
+            }
+        }
+    }
+
     pub fn page_count(&self) -> usize {
         self.cfg.pages.len() + usize::from(self.cfg.app_library)
     }
@@ -745,7 +790,7 @@ impl Lumen {
     pub fn launch_at(&mut self, ctx: &Context, pkg: &str, from: Option<Rect>) {
         // a second tap while an app is already opening must do nothing
         let now = ctx.input(|i| i.time);
-        if now - self.last_launch < 0.6 {
+        if now - self.last_launch < 0.12 {
             return;
         }
         self.last_launch = now;
@@ -763,11 +808,11 @@ impl Lumen {
                 (Some(r), crate::config::LaunchAnim::Zoom | crate::config::LaunchAnim::Reveal) => {
                     let reveal = self.cfg.launch_anim == crate::config::LaunchAnim::Reveal;
                     let (a, rect) = (a.clone(), [(r.left() * k) as i32, (r.top() * k) as i32, (r.width() * k) as i32, (r.height() * k) as i32]);
-                    crate::bridge::bg(move || platform::launch_from(&a, rect, reveal));
+                    std::thread::spawn(move || platform::launch_from(&a, rect, reveal));
                 }
                 _ => {
                     let a = a.clone();
-                    crate::bridge::bg(move || platform::launch(&a));
+                    std::thread::spawn(move || platform::launch(&a));
                 }
             }
             *self.cfg.launches.entry(pkg.to_string()).or_default() += 1;
@@ -909,7 +954,7 @@ impl Lumen {
         let r = ctx.content_rect();
         let k = ctx.pixels_per_point();
         format!(
-            "Lumen {}\nDevice: {} {} (Android API {})\nMemory: {} MB{}, {} cores\nScreen: {:.0}x{:.0} px, density {:.2}, {:.0} Hz\nGraphics: {}\nMode: {:?}, light is {}{}\nFrame time while moving: {:.1} ms (budget {:.1} ms)\nApps: {}, icons loaded {} ({} px, {} atlas pages)\nPreset: {:?}, grid {}x{}, pages {}",
+            "Lumen {}\nDevice: {} {} (Android API {})\nMemory: {} MB{}, {} cores\nScreen: {:.0}x{:.0} px, density {:.2}, {:.0} Hz\nGraphics: {}\nMode: {:?}, light is {}{}\nWallpaper: {}\nFrame time while moving: {:.1} ms (budget {:.1} ms)\nApps: {}, icons loaded {} ({} px, {} atlas pages)\nPreset: {:?}, grid {}x{}, pages {}",
             self.version,
             self.device.manufacturer,
             self.device.model,
@@ -925,6 +970,7 @@ impl Lumen {
             self.cfg.perf_mode,
             if self.light { "on" } else { "off" },
             if self.cfg.light_learned { " (learned from slow frames)" } else { "" },
+            if self.glass.active() { "glass active".to_string() } else { self.glass.status.clone() },
             self.perf.recent * 1000.0,
             self.frame_budget * 1000.0,
             self.apps.len(),

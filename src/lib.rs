@@ -9,6 +9,7 @@ mod clock;
 mod config;
 mod drawer;
 mod fonts;
+mod glass;
 mod home;
 mod icons;
 mod menu;

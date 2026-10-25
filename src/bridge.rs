@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::sync::mpsc::{channel, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, OnceLock};
 
+
 static BG: OnceLock<Mutex<Sender<Cmd>>> = OnceLock::new();
 
 /// Runs something that talks to Android (it can take milliseconds) off the drawing thread.
@@ -27,6 +28,8 @@ pub struct Snapshot {
     pub dark_text: bool,
     pub refresh_hz: f32,
     pub default_home: bool,
+    pub wallpaper_access: bool,
+    pub wallpaper_live: bool,
     pub home_pressed: bool,
     pub settings_requested: bool,
 }
@@ -66,6 +69,8 @@ fn poll(s: &mut Snapshot, slow: bool) {
         s.dark_text = platform::wallpaper_dark_text();
         s.refresh_hz = platform::refresh_rate();
         s.default_home = platform::is_default_home();
+        s.wallpaper_access = platform::wallpaper_access();
+        s.wallpaper_live = platform::wallpaper_live();
     }
 }
 

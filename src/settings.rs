@@ -510,6 +510,25 @@ fn look_page(ui: &mut Ui, l: &mut Lumen, c: &mut Ctl) {
         label(ui, c, "Accent color");
         swatches(ui, c, &mut l.cfg.accent);
     }
+    section(ui, c, "Liquid Glass (iOS style)");
+    switch_row(ui, c, "Real Liquid Glass", "Glass that bends and blurs your actual wallpaper", &mut l.cfg.real_glass);
+    if l.cfg.real_glass {
+        if l.wallpaper_live {
+            note(ui, c, "Not available with a live wallpaper. Pick a normal picture to see it.");
+        } else if !l.wallpaper_access {
+            note(ui, c, "Android only lets an app read your wallpaper with \"All files access\". Lumen uses it for nothing else, and the picture never leaves your phone.");
+            ui.add_space(8.0);
+            if button(ui, c, ph::IMAGE, "Allow wallpaper access", true) {
+                platform::request_wallpaper_access();
+            }
+        } else if l.light {
+            note(ui, c, "Turned off by light mode (Settings > Performance).");
+        } else if l.glass.active() {
+            note(ui, c, "On. It shows on the iOS dock and the Search capsule.");
+        } else {
+            note(ui, c, "Reading your wallpaper…");
+        }
+    }
     section(ui, c, "Wallpaper");
     let shown = format!("{}%", (l.cfg.wallpaper_dim * 100.0) as i32);
     slider_row(ui, c, "Dim the wallpaper", &mut l.cfg.wallpaper_dim, 0.0..=0.8, shown);

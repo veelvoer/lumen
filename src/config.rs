@@ -302,6 +302,8 @@ pub struct Config {
     pub launch_anim: LaunchAnim,
     pub blur: f32,
     pub haptics: bool,
+    /// read the wallpaper (with permission) to make real Liquid Glass
+    pub real_glass: bool,
     pub perf_mode: PerfMode,
     /// Auto mode saw the phone struggle and switched to Light; remembered between starts
     pub light_learned: bool,
@@ -391,6 +393,7 @@ impl Default for Config {
             launch_anim: LaunchAnim::Zoom,
             blur: 1.0,
             haptics: true,
+            real_glass: true,
             perf_mode: PerfMode::Auto,
             light_learned: false,
             margin_side: 0.0,

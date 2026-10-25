@@ -4,7 +4,16 @@
 use crate::platform::{self, Battery, Haptic, Insets};
 use std::collections::HashMap;
 use std::sync::mpsc::{channel, RecvTimeoutError, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
+
+static BG: OnceLock<Mutex<Sender<Cmd>>> = OnceLock::new();
+
+/// Runs something that talks to Android (it can take milliseconds) off the drawing thread.
+pub fn bg(f: impl FnOnce() + Send + 'static) {
+    if let Some(tx) = BG.get().and_then(|m| m.lock().ok()) {
+        let _ = tx.send(Cmd::Run(Box::new(f)));
+    }
+}
 use std::time::{Duration, Instant};
 
 #[derive(Clone, Default)]
@@ -15,16 +24,20 @@ pub struct Snapshot {
     pub battery: Option<Battery>,
     pub badges: HashMap<String, u32>,
     pub dark: bool,
+    pub dark_text: bool,
     pub home_pressed: bool,
     pub settings_requested: bool,
 }
 
 enum Cmd {
+    Run(Box<dyn FnOnce() + Send>),
     Blur(i32),
     Offset(f32),
     Haptic(Haptic),
     Bars { hide_status: bool, hide_nav: bool },
     Rotate(bool),
+    LightBars(bool),
+    HighRefresh,
     Poke,
 }
 
@@ -48,6 +61,7 @@ fn poll(s: &mut Snapshot, slow: bool) {
         s.battery = Some(platform::battery());
         s.badges = platform::badges();
         s.dark = platform::is_dark();
+        s.dark_text = platform::wallpaper_dark_text();
     }
 }
 
@@ -59,6 +73,8 @@ impl Bridge {
             poll(&mut s, true);
         }
         let (tx, rx) = channel::<Cmd>();
+        let _ = BG.set(Mutex::new(tx.clone()));
+        let _ = tx.send(Cmd::HighRefresh);
         let (s2, ctx2) = (snap.clone(), ctx.clone());
         std::thread::spawn(move || {
             let mut last_slow = Instant::now();
@@ -66,6 +82,7 @@ impl Bridge {
             loop {
                 match rx.recv_timeout(Duration::from_millis(120)) {
                     Ok(cmd) => match cmd {
+                        Cmd::Run(f) => f(),
                         Cmd::Blur(px) => {
                             if px != blur {
                                 blur = px;
@@ -76,6 +93,8 @@ impl Bridge {
                         Cmd::Haptic(h) => platform::haptic(h),
                         Cmd::Bars { hide_status, hide_nav } => platform::set_system_bars(hide_status, hide_nav),
                         Cmd::Rotate(on) => platform::set_rotation(on),
+                        Cmd::LightBars(l) => platform::set_light_bars(l),
+                        Cmd::HighRefresh => platform::request_high_refresh(),
                         Cmd::Poke => {}
                     },
                     Err(RecvTimeoutError::Timeout) => {}
@@ -93,6 +112,7 @@ impl Bridge {
                         || next.home_pressed
                         || next.settings_requested
                         || next.dark != cur.dark
+                        || next.dark_text != cur.dark_text
                 };
                 // keep flags the UI has not consumed yet
                 {
@@ -135,6 +155,15 @@ impl Bridge {
 
     pub fn bars(&self, hide_status: bool, hide_nav: bool) {
         let _ = self.tx.send(Cmd::Bars { hide_status, hide_nav });
+    }
+
+    /// Ask for the display's fastest refresh rate while Lumen is showing.
+    pub fn high_refresh(&self) {
+        let _ = self.tx.send(Cmd::HighRefresh);
+    }
+
+    pub fn light_bars(&self, light: bool) {
+        let _ = self.tx.send(Cmd::LightBars(light));
     }
 
     pub fn rotate(&self, on: bool) {

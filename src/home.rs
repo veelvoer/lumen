@@ -139,7 +139,10 @@ impl Lumen {
         self.step_springs(ctx, dt);
         // the root ui must be claimed, everything is painted in layers
         egui::CentralPanel::default().frame(Frame::NONE).show(root, |_| {});
-        self.paint_home(ctx, &geo, dt);
+        let covered = self.drawer >= 0.995 && self.cfg.drawer_opacity >= 0.99 && self.screen == Screen::Home;
+        if !covered {
+            self.paint_home(ctx, &geo, dt);
+        }
         if self.screen == Screen::Home {
             self.touch(ctx, &geo);
             if self.drawer > 0.001 {
@@ -188,6 +191,9 @@ impl Lumen {
         busy |= sp.step(dt, f.popup);
         self.folder_t = sp.x;
         self.folder_v = sp.v;
+        if !matches!(self.touch, Touch::LibraryScroll) {
+            busy |= self.lib_scroller.step(dt, self.lib_max);
+        }
         self.menu_t.target = if self.menu.is_some() { 1.0 } else { 0.0 };
         busy |= self.menu_t.step(dt, f.menu);
         if self.menu.is_none() && self.menu_t.x < 0.02 {
@@ -264,6 +270,9 @@ impl Lumen {
         let base_alpha = 1.0 - fade * amount;
 
         let lib = if cfg.app_library { Some((self.lib_groups(), self.lib_layout(geo, 0.0))) } else { None };
+        if let Some((_, (_, _, content))) = &lib {
+            self.lib_max = (content + self.lib_scroller.offset.min(0.0) - (geo.screen.height() - geo.top) + 120.0).max(0.0);
+        }
 
         // take the heavy parts out of self so the layer closures can use them freely
         let mut icons = self.icons.take().unwrap();
@@ -395,7 +404,7 @@ impl Lumen {
         layer(ctx, "top", 0, screen, tf(0.0, 1.0), base_alpha, |p| {
             if let Some(s) = geo.search {
                 if cfg.search != Search::Off {
-                    widgets::search_pill(p, s, if cfg.preset == Preset::Pixel { "Search apps, web and more" } else { "Search" }, cfg, pal, cfg.preset == Preset::Pixel);
+                    widgets::search_pill(p, s, "Search", cfg, pal, cfg.preset == Preset::Pixel);
                 }
             }
             if cfg.page_dots && count > 1 {
@@ -466,14 +475,14 @@ impl Lumen {
         let gap = 14.0;
         let card = (w - 2.0 * margin - gap) / 2.0;
         let top = geo.top + 14.0;
-        let search = Rect::from_min_size(pos2(margin + off, top - self.lib_scroll.min(0.0)), vec2(w - 2.0 * margin, 44.0));
+        let search = Rect::from_min_size(pos2(margin + off, top - self.lib_scroller.offset.min(0.0)), vec2(w - 2.0 * margin, 44.0));
         let mut out = vec![];
         let groups = self.lib_groups();
         let start = top + 44.0 + 20.0;
         let pitch = card + 26.0 + gap;
         for i in 0..groups.len() {
             let (col, row) = (i % 2, i / 2);
-            let r = Rect::from_min_size(pos2(margin + off + col as f32 * (card + gap), start + row as f32 * pitch - self.lib_scroll), vec2(card, card));
+            let r = Rect::from_min_size(pos2(margin + off + col as f32 * (card + gap), start + row as f32 * pitch - self.lib_scroller.offset), vec2(card, card));
             let pad = card * 0.09;
             let icon = (card - 2.0 * pad - card * 0.07) / 2.0;
             let slots: Vec<Rect> = (0..4)
@@ -801,7 +810,7 @@ impl Lumen {
                     } else if d.x.abs() > d.y.abs() {
                         self.touch = Touch::Pager;
                         self.page -= d.x / w;
-                    } else if self.cfg.app_library && self.page.round() as usize == self.cfg.pages.len() && (self.lib_scroll > 0.0 || d.y < 0.0) {
+                    } else if self.cfg.app_library && self.page.round() as usize == self.cfg.pages.len() && (self.lib_scroller.offset > 0.5 || d.y < 0.0) {
                         self.touch = Touch::LibraryScroll;
                     } else if d.y < 0.0 {
                         if self.cfg.swipe_up == Action::Drawer {
@@ -851,10 +860,10 @@ impl Lumen {
                 }
             }
             Touch::LibraryScroll => {
-                let (_, _, content) = self.lib_layout(geo, 0.0);
-                let max = (content - (geo.screen.height() - geo.top) + 120.0).max(0.0);
-                self.lib_scroll = (self.lib_scroll - delta.y).clamp(0.0, max);
+                let max = self.lib_max;
+                self.lib_scroller.drag_by(delta.y, max);
                 if !down {
+                    self.lib_scroller.release(-vel.y);
                     self.touch = Touch::Idle;
                 }
             }
@@ -868,6 +877,8 @@ impl Lumen {
                     d.pos = pos;
                 }
                 if !down {
+                    // decide what is under the finger where it let go
+                    self.update_drag(ctx, geo, &mut d, time);
                     self.drop_drag(ctx, geo, d, time);
                 } else {
                     self.update_drag(ctx, geo, &mut d, time);
@@ -1138,12 +1149,14 @@ impl Lumen {
             }
             Hover::Info => {
                 if let Item::App(p) = &item {
-                    platform::app_info(p);
+                    let p = p.clone();
+                    crate::bridge::bg(move || platform::app_info(&p));
                 }
             }
             Hover::Uninstall => {
                 if let Item::App(p) = &item {
-                    platform::uninstall(p);
+                    let p = p.clone();
+                    crate::bridge::bg(move || platform::uninstall(&p));
                 }
             }
             Hover::Merge(key) => placed = self.merge_into(&key, &item),

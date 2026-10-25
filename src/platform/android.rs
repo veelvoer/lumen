@@ -327,74 +327,99 @@ pub fn install_apk(path: &str) -> Result<(), String> {
 }
 
 /// Loads an app icon as RGBA. `px` is the side of the square bitmap.
+/// Draws drawables (bottom first) into a new transparent bitmap and returns its premultiplied RGBA bytes.
+fn render_layers(env: &mut JNIEnv, px: i32, layers: &[&JObject], bounds: [i32; 4], plate: Option<i32>) -> JResult<Vec<u8>> {
+    let cfg = env.get_static_field("android/graphics/Bitmap$Config", "ARGB_8888", "Landroid/graphics/Bitmap$Config;")?.l()?;
+    let bmp = env.call_static_method("android/graphics/Bitmap", "createBitmap", "(IILandroid/graphics/Bitmap$Config;)Landroid/graphics/Bitmap;", &[JValue::Int(px), JValue::Int(px), JValue::Object(&cfg)])?.l()?;
+    let canvas = env.new_object("android/graphics/Canvas", "(Landroid/graphics/Bitmap;)V", &[JValue::Object(&bmp)])?;
+    if let Some(c) = plate {
+        env.call_method(&canvas, "drawColor", "(I)V", &[JValue::Int(c)])?;
+    }
+    for d in layers {
+        env.call_method(d, "setBounds", "(IIII)V", &[JValue::Int(bounds[0]), JValue::Int(bounds[1]), JValue::Int(bounds[2]), JValue::Int(bounds[3])])?;
+        env.call_method(d, "draw", "(Landroid/graphics/Canvas;)V", &[JValue::Object(&canvas)])?;
+    }
+    let n = px * px * 4;
+    let buf = env.call_static_method("java/nio/ByteBuffer", "allocateDirect", "(I)Ljava/nio/ByteBuffer;", &[JValue::Int(n)])?.l()?;
+    env.call_method(&bmp, "copyPixelsToBuffer", "(Ljava/nio/Buffer;)V", &[JValue::Object(&buf)])?;
+    let jb = jni::objects::JByteBuffer::from(unsafe { JObject::from_raw(buf.as_raw()) });
+    let ptr = env.get_direct_buffer_address(&jb)?;
+    let rgba = unsafe { std::slice::from_raw_parts(ptr, n as usize) }.to_vec();
+    env.call_method(&bmp, "recycle", "()V", &[])?;
+    Ok(rgba)
+}
+
+fn alpha_only(rgba: &mut [u8]) {
+    for px in rgba.chunks_exact_mut(4) {
+        let al = px[3];
+        px.copy_from_slice(&[al, al, al, al]);
+    }
+}
+
+fn coverage(rgba: &[u8]) -> f32 {
+    rgba.chunks_exact(4).map(|p| p[3] as u32).sum::<u32>() as f32 / (rgba.len() / 4) as f32 / 255.0
+}
+
+/// Loads an app icon as RGBA. `px` is the side of the square bitmap.
+/// With `want_mono` the result is a single-color glyph where possible: the app's own themed layer, else the
+/// silhouette of its foreground (that is what Nothing OS does), else a gray version of the icon.
 pub fn load_icon(a: &App, px: i32, want_mono: bool) -> Option<RawIcon> {
     with(|env, act| {
         let pm = package_manager(env, act)?;
         let (p, c) = (env.new_string(&a.pkg)?, env.new_string(&a.cls)?);
         let cn = env.new_object("android/content/ComponentName", "(Ljava/lang/String;Ljava/lang/String;)V", &[JValue::Object(&p), JValue::Object(&c)])?;
         let dr = env.call_method(&pm, "getActivityIcon", "(Landroid/content/ComponentName;)Landroid/graphics/drawable/Drawable;", &[JValue::Object(&cn)])?.l()?;
-
-        let cfg = env.get_static_field("android/graphics/Bitmap$Config", "ARGB_8888", "Landroid/graphics/Bitmap$Config;")?.l()?;
-        let bmp = env.call_static_method("android/graphics/Bitmap", "createBitmap", "(IILandroid/graphics/Bitmap$Config;)Landroid/graphics/Bitmap;", &[JValue::Int(px), JValue::Int(px), JValue::Object(&cfg)])?.l()?;
-        let canvas = env.new_object("android/graphics/Canvas", "(Landroid/graphics/Bitmap;)V", &[JValue::Object(&bmp)])?;
-
         let adaptive = env.is_instance_of(&dr, "android/graphics/drawable/AdaptiveIconDrawable")?;
-        let draw = |env: &mut JNIEnv, d: &JObject, l: i32, t: i32, r: i32, b: i32| -> JResult<()> {
-            env.call_method(d, "setBounds", "(IIII)V", &[JValue::Int(l), JValue::Int(t), JValue::Int(r), JValue::Int(b)])?;
-            env.call_method(d, "draw", "(Landroid/graphics/Canvas;)V", &[JValue::Object(&canvas)])?;
-            Ok(())
-        };
-        let mut mono = false;
+
         if adaptive {
             // Layers are 108dp with the middle 72dp visible: draw them 1.5x so the visible part fills the bitmap.
             let pad = px / 4;
-            if want_mono && android_sdk() >= 33 {
-                let m = env.call_method(&dr, "getMonochrome", "()Landroid/graphics/drawable/Drawable;", &[])?.l()?;
-                if !m.is_null() {
-                    draw(env, &m, -pad, -pad, px + pad, px + pad)?;
-                    mono = true;
+            let bounds = [-pad, -pad, px + pad, px + pad];
+            let fg = env.call_method(&dr, "getForeground", "()Landroid/graphics/drawable/Drawable;", &[])?.l()?;
+            let bg = env.call_method(&dr, "getBackground", "()Landroid/graphics/drawable/Drawable;", &[])?.l()?;
+            if want_mono {
+                if android_sdk() >= 33 {
+                    let m = env.call_method(&dr, "getMonochrome", "()Landroid/graphics/drawable/Drawable;", &[])?.l()?;
+                    if !m.is_null() {
+                        let mut rgba = render_layers(env, px, &[&m], bounds, None)?;
+                        alpha_only(&mut rgba);
+                        return Ok(RawIcon { size: px as usize, rgba, mono: true });
+                    }
                 }
-            }
-            if !mono {
-                for layer in ["getBackground", "getForeground"] {
-                    let d = env.call_method(&dr, layer, "()Landroid/graphics/drawable/Drawable;", &[])?.l()?;
-                    if !d.is_null() {
-                        draw(env, &d, -pad, -pad, px + pad, px + pad)?;
+                if !fg.is_null() {
+                    let mut sil = render_layers(env, px, &[&fg], bounds, None)?;
+                    let cov = coverage(&sil);
+                    if cov > 0.04 && cov < 0.38 {
+                        alpha_only(&mut sil);
+                        return Ok(RawIcon { size: px as usize, rgba: sil, mono: true });
                     }
                 }
             }
-        } else {
-            // Old-style icons come with their own shape: put them on a plain plate.
-            env.call_method(&canvas, "drawColor", "(I)V", &[JValue::Int(0xFFF1F1F1u32 as i32)])?;
-            let inset = px * 14 / 100;
-            draw(env, &dr, inset, inset, px - inset, px - inset)?;
+            let layers: Vec<&JObject> = [&bg, &fg].into_iter().filter(|d| !d.is_null()).collect();
+            let mut rgba = render_layers(env, px, &layers, bounds, None)?;
+            if want_mono {
+                gray(&mut rgba);
+            }
+            return Ok(RawIcon { size: px as usize, rgba, mono: false });
         }
 
-        let n = (px * px * 4) as i32;
-        let buf = env.call_static_method("java/nio/ByteBuffer", "allocateDirect", "(I)Ljava/nio/ByteBuffer;", &[JValue::Int(n)])?.l()?;
-        env.call_method(&bmp, "copyPixelsToBuffer", "(Ljava/nio/Buffer;)V", &[JValue::Object(&buf)])?;
-        let jb = jni::objects::JByteBuffer::from(unsafe { JObject::from_raw(buf.as_raw()) });
-        let ptr = env.get_direct_buffer_address(&jb)?;
-        let mut rgba = unsafe { std::slice::from_raw_parts(ptr, n as usize) }.to_vec();
-        env.call_method(&bmp, "recycle", "()V", &[])?;
-
-        if mono {
-            // keep only the alpha: the glyph gets tinted when drawn
-            for px in rgba.chunks_exact_mut(4) {
-                let al = px[3];
-                px.copy_from_slice(&[al, al, al, al]);
-            }
-        } else if want_mono {
-            // no monochrome layer: fall back to a grayscale of the colored icon
-            for px in rgba.chunks_exact_mut(4) {
-                let g = ((px[0] as u32 * 30 + px[1] as u32 * 59 + px[2] as u32 * 11) / 100) as u8;
-                px[0] = g;
-                px[1] = g;
-                px[2] = g;
-            }
+        // Old-style icons come with their own shape: put them on a plain plate.
+        let inset = px * 14 / 100;
+        let mut rgba = render_layers(env, px, &[&dr], [inset, inset, px - inset, px - inset], Some(0xFFF1F1F1u32 as i32))?;
+        if want_mono {
+            gray(&mut rgba);
         }
-        Ok(RawIcon { size: px as usize, rgba, mono })
+        Ok(RawIcon { size: px as usize, rgba, mono: false })
     })
+}
+
+fn gray(rgba: &mut [u8]) {
+    for px in rgba.chunks_exact_mut(4) {
+        let g = ((px[0] as u32 * 30 + px[1] as u32 * 59 + px[2] as u32 * 11) / 100) as u8;
+        px[0] = g;
+        px[1] = g;
+        px[2] = g;
+    }
 }
 
 fn android_sdk() -> i32 {
@@ -672,5 +697,28 @@ pub fn launch_from(a: &App, rect: [i32; 4], reveal: bool) {
     .or_else(|| {
         launch(a);
         Some(())
+    });
+}
+
+/// Does the wallpaper want dark text on top of it? (Android 8.1+, needs no permission)
+pub fn wallpaper_dark_text() -> bool {
+    with(|env, act| {
+        let wm = env.call_static_method("android/app/WallpaperManager", "getInstance", "(Landroid/content/Context;)Landroid/app/WallpaperManager;", &[JValue::Object(act)])?.l()?;
+        let colors = env.call_method(&wm, "getWallpaperColors", "(I)Landroid/app/WallpaperColors;", &[JValue::Int(1)])?.l()?;
+        if colors.is_null() {
+            return Ok(false);
+        }
+        let hints = env.call_method(&colors, "getColorHints", "()I", &[])?.i()?;
+        Ok(hints & 1 != 0)
+    })
+    .unwrap_or(false)
+}
+
+/// Runs the screen at its fastest mode (120 Hz on this kind of phone) while Lumen is in front.
+pub fn request_high_refresh() {
+    with(|env, act| {
+        let cls = glue(env, act, "dev.voer.lumen.Glue")?;
+        env.call_static_method(&cls, "highRefresh", "(Landroid/app/Activity;)V", &[JValue::Object(act)])?;
+        Ok(())
     });
 }

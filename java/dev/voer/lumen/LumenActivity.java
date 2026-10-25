@@ -21,6 +21,8 @@ public final class LumenActivity extends NativeActivity {
     @Override
     protected void onCreate(Bundle b) {
         super.onCreate(b);
+        // NativeActivity asks for an opaque RGB_565 window; the wallpaper can only show through a translucent one
+        getWindow().setFormat(android.graphics.PixelFormat.TRANSLUCENT);
         Intent i = getIntent();
         if (i != null && i.hasCategory(Intent.CATEGORY_LAUNCHER) && !i.hasCategory(Intent.CATEGORY_HOME)) settingsRequested = true;
     }

@@ -157,7 +157,7 @@ impl Lumen {
         let time = ctx.input(|i| i.time);
         let lifting = matches!(self.touch, Touch::Lifted { .. } | Touch::Drag(_));
         let idle = matches!(self.touch, Touch::Idle);
-        let click_ok = time > self.suppress_click;
+        let mut click_ok = time > self.suppress_click;
         let scroll_to = self.drawer_scroll_to.take();
 
         Area::new(Id::new("drawer")).order(Order::Foreground).fixed_pos(rect.min).constrain(false).show(ctx, |ui| {
@@ -182,6 +182,8 @@ impl Lumen {
                     .hint_text(egui::RichText::new(if pixel { "Search apps, web and more" } else { "Search" }).color(pal.dim))
                     .desired_width(f32::INFINITY)
                     .margin(vec2(0.0, 0.0))
+                    .min_size(vec2(field.width(), field.height()))
+                    .vertical_align(egui::Align::Center)
                     .font(fonts::body(&cfg, 16.0 * cfg.font_scale, false))
                     .background_color(Color32::TRANSPARENT)
                     .frame(Frame::NONE);
@@ -238,14 +240,28 @@ impl Lumen {
                 visible.sort_by_key(|&i| std::cmp::Reverse(cfg.launches.get(&self.apps[i].pkg).copied().unwrap_or(0)));
             }
 
+            // content height first, so the scroller knows its limits
+            let content_h = if let Some(rows) = &rows_data {
+                rows.len() as f32 * 64.0 + 20.0
+            } else {
+                match cfg.drawer {
+                    DrawerStyle::Grid => visible.len().div_ceil(cfg.drawer_cols.max(3)) as f32 * (cfg.icon_size + 40.0 * cfg.font_scale + 10.0) + 24.0,
+                    DrawerStyle::List => visible.len() as f32 * 62.0 + 24.0,
+                }
+            };
+            let max_off = (content_h - body.height()).max(0.0);
+            if let Some(o) = scroll_to {
+                self.scroller.jump_to(o.min(max_off));
+            }
+            let dt = ui.ctx().input(|i| i.stable_dt).clamp(0.001, 0.05);
+            self.scroller.update(ui.ctx(), body, max_off, !lifting && t > 0.98, dt);
+            click_ok = click_ok && self.scroller.tap_ok();
             ui.scope_builder(UiBuilder::new().max_rect(body), |ui| {
                 ui.set_clip_rect(body);
-                let mut sa = egui::ScrollArea::vertical().auto_shrink(false).scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden).scroll_source(if lifting { egui::scroll_area::ScrollSource::NONE } else { egui::scroll_area::ScrollSource::default() });
-                if let Some(o) = scroll_to {
-                    sa = sa.vertical_scroll_offset(o);
-                }
-                sa.show_viewport(ui, |ui, viewport| {
-                    let origin = ui.min_rect().min;
+                {
+                    let off = self.scroller.offset;
+                    let viewport = Rect::from_min_size(pos2(0.0, off), body.size());
+                    let origin = body.min - vec2(0.0, off);
                     let w = body.width() - if scrub { 24.0 } else { 0.0 };
                     if let Some(rows) = &rows_data {
                         // results as a list
@@ -347,7 +363,7 @@ impl Lumen {
                             }
                         }
                     }
-                });
+                }
             });
 
             // letter scrubber on the right edge
@@ -396,7 +412,8 @@ impl Lumen {
             self.launch(ctx, &pkg);
         }
         if let Some(q) = web {
-            platform::search_web(&q);
+            let q2 = q.clone();
+            crate::bridge::bg(move || platform::search_web(&q2));
             self.close_drawer(ctx);
         }
         if let Some((pkg, ir, start)) = grab {
@@ -438,6 +455,7 @@ impl Lumen {
         let mut cancel = false;
         let time = ctx.input(|i| i.time);
         let click_ok = time > self.suppress_click;
+        let mut search_sc = std::mem::take(&mut self.search_scroller);
         Area::new(Id::new("search")).order(Order::Foreground).fixed_pos(screen.min).show(ctx, |ui| {
             let ios = cfg.preset == Preset::Ios;
             ui.painter().rect_filled(screen, 0, if ios { Color32::from_black_alpha(190) } else { pal.sheet });
@@ -470,7 +488,7 @@ impl Lumen {
             let rows = results(self, &self.query.clone());
             let area = Rect::from_min_max(pos2(screen.left() + 8.0, bar.bottom() + 14.0), pos2(screen.right() - 8.0, screen.bottom() - ib));
             ui.scope_builder(UiBuilder::new().max_rect(area), |ui| {
-                egui::ScrollArea::vertical().auto_shrink(false).scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden).show(ui, |ui| {
+                crate::scroll::show(ui, &mut search_sc, "spotlight", area, true, |ui| {
                     let origin = ui.min_rect().min;
                     let rh = 62.0;
                     ui.set_height(rows.len() as f32 * rh);
@@ -510,6 +528,7 @@ impl Lumen {
                 });
             });
         });
+        self.search_scroller = search_sc;
         if cancel {
             self.search_open = false;
             self.query.clear();
@@ -519,7 +538,8 @@ impl Lumen {
             self.launch(ctx, &pkg);
         }
         if let Some(q) = web {
-            platform::search_web(&q);
+            let q2 = q.clone();
+            crate::bridge::bg(move || platform::search_web(&q2));
             self.search_open = false;
             self.query.clear();
         }

@@ -12,6 +12,7 @@ mod home;
 mod icons;
 mod menu;
 mod phosphor;
+mod scroll;
 mod platform;
 mod settings;
 mod theme;

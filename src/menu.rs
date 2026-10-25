@@ -164,8 +164,8 @@ impl Lumen {
     fn run_menu_act(&mut self, ctx: &Context, a: Act) {
         self.dirty = true;
         match a {
-            Act::AppInfo(p) => platform::app_info(&p),
-            Act::Uninstall(p) => platform::uninstall(&p),
+            Act::AppInfo(p) => crate::bridge::bg(move || platform::app_info(&p)),
+            Act::Uninstall(p) => crate::bridge::bg(move || platform::uninstall(&p)),
             Act::RemoveKey(k) => self.remove_item(&k),
             Act::AddHome(p) => {
                 let pi = (self.page.round() as usize).min(self.cfg.pages.len().saturating_sub(1));
@@ -302,6 +302,7 @@ impl Lumen {
         let battery = self.battery;
         let mut add: Option<WidgetKind> = None;
         let mut close = false;
+        let mut picker_sc = std::mem::take(&mut self.picker_scroller);
         let k = ctx.pixels_per_point();
         let it = self.insets.top / k;
         let ib = self.insets.bottom / k;
@@ -315,7 +316,7 @@ impl Lumen {
             ui.painter().text(pos2(sheet.left() + 24.0, sheet.top() + 30.0), Align2::LEFT_CENTER, "Widgets", fonts::body(&cfg, 22.0, true), pal.text);
             let body = Rect::from_min_max(pos2(sheet.left() + 12.0, sheet.top() + 64.0), pos2(sheet.right() - 12.0, sheet.bottom() - ib));
             ui.scope_builder(UiBuilder::new().max_rect(body), |ui| {
-                egui::ScrollArea::vertical().auto_shrink(false).scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden).show(ui, |ui| {
+                crate::scroll::show(ui, &mut picker_sc, "picker", body, true, |ui| {
                     for kind in WidgetKind::ALL {
                         let (w, h) = kind.span(cfg.cols);
                         let size = vec2(w as f32 * geo.cell.x, h as f32 * geo.cell.y);
@@ -339,6 +340,7 @@ impl Lumen {
                 });
             });
         });
+        self.picker_scroller = picker_sc;
         if let Some(kind) = add {
             let id = self.cfg.new_id();
             let pi = (self.page.round() as usize).min(self.cfg.pages.len().saturating_sub(1));

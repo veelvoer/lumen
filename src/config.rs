@@ -375,7 +375,7 @@ impl Default for Config {
             label_size: 12.0,
             label_shadow: true,
             time_format: TimeFormat::Phone,
-            drawer_opacity: 0.95,
+            drawer_opacity: 1.0,
             drawer_sort: Sort::Alphabetical,
             drawer_search: SearchPos::Auto,
             drawer_scrubber: false,
@@ -448,7 +448,7 @@ impl Config {
                 self.shape = Shape::Circle;
                 self.icon_size = 56.0;
                 self.cols = 5;
-                self.rows = 5;
+                self.rows = 6;
                 self.dock_slots = 4;
                 self.labels = true;
                 self.themed_icons = false;
@@ -469,7 +469,7 @@ impl Config {
                 self.widget_radius = 28.0;
                 self.label_size = 12.0;
                 self.label_shadow = true;
-                self.drawer_opacity = 0.95;
+                self.drawer_opacity = 1.0;
                 self.drawer_scrubber = false;
                 self.page_effect = PageEffect::Parallax;
                 self.launch_anim = LaunchAnim::Reveal;
@@ -505,7 +505,7 @@ impl Config {
                 self.widget_radius = 22.0;
                 self.label_size = 11.5;
                 self.label_shadow = true;
-                self.drawer_opacity = 0.9;
+                self.drawer_opacity = 1.0;
                 self.drawer_scrubber = false;
                 self.page_effect = PageEffect::Slide;
                 self.launch_anim = LaunchAnim::Zoom;

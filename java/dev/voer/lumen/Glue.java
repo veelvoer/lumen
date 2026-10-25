@@ -84,6 +84,27 @@ public final class Glue {
         });
     }
 
+    /** Picks the display mode with the highest refresh rate at the current resolution. */
+    public static void highRefresh(final Activity a) {
+        a.runOnUiThread(new Runnable() {
+            @Override public void run() {
+                try {
+                    android.view.Display d = a.getDisplay();
+                    if (d == null) return;
+                    android.view.Display.Mode cur = d.getMode();
+                    android.view.Display.Mode best = cur;
+                    for (android.view.Display.Mode m : d.getSupportedModes()) {
+                        if (m.getPhysicalWidth() == cur.getPhysicalWidth() && m.getPhysicalHeight() == cur.getPhysicalHeight() && m.getRefreshRate() > best.getRefreshRate()) best = m;
+                    }
+                    android.view.WindowManager.LayoutParams lp = a.getWindow().getAttributes();
+                    lp.preferredDisplayModeId = best.getModeId();
+                    lp.preferredRefreshRate = best.getRefreshRate();
+                    a.getWindow().setAttributes(lp);
+                } catch (Throwable ignored) {}
+            }
+        });
+    }
+
     public static boolean takeSettings() {
         boolean was = LumenActivity.settingsRequested;
         LumenActivity.settingsRequested = false;

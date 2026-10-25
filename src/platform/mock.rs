@@ -212,3 +212,9 @@ pub fn launch_from(a: &App, _: [i32; 4], _: bool) {
 pub fn now_ms() -> i64 {
     1_792_878_420_000
 }
+
+pub fn wallpaper_dark_text() -> bool {
+    std::env::var("LUMEN_DARK_TEXT").is_ok()
+}
+
+pub fn request_high_refresh() {}

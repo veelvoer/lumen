@@ -85,7 +85,9 @@ fn nav_row(ui: &mut Ui, c: &Ctl, glyph: &str, title: &str, sub: &str, badge: boo
     tonal_icon(p, rect.left_center() + vec2(30.0, 0.0), glyph, c);
     p.text(rect.left_center() + vec2(66.0, if sub.is_empty() { 0.0 } else { -10.0 }), Align2::LEFT_CENTER, title, c.body(16.5, false), c.pal.text);
     if !sub.is_empty() {
-        p.text(rect.left_center() + vec2(66.0, 11.0), Align2::LEFT_CENTER, sub, c.body(13.0, false), c.pal.dim);
+        let font = c.body(13.0, false);
+        let shown = widgets::fit(p, sub, &font, rect.width() - 66.0 - 44.0);
+        p.text(rect.left_center() + vec2(66.0, 11.0), Align2::LEFT_CENTER, shown, font, c.pal.dim);
     }
     widgets::glyph_at(p, rect.right_center() - vec2(14.0, 0.0), Align2::RIGHT_CENTER, ph::CARET_RIGHT, 18.0, c.pal.dim);
     if badge {
@@ -273,7 +275,12 @@ pub fn show(l: &mut Lumen, root: &mut Ui) {
                         l.screen = Screen::Home;
                     }
                 }
-                egui::ScrollArea::vertical().id_salt(("settings-scroll", pk)).auto_shrink(false).scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden).show(ui, |ui| {
+                if l.settings_scrollers.len() <= pk {
+                    l.settings_scrollers.resize_with(pk + 1, Default::default);
+                }
+                let mut sc = std::mem::take(&mut l.settings_scrollers[pk]);
+                let body = ui.available_rect_before_wrap();
+                crate::scroll::show(ui, &mut sc, ("settings-scroll", pk), body, tc > 0.98, |ui| {
                     Frame::NONE.inner_margin(egui::Margin::symmetric(18, 0)).show(ui, |ui| {
                         match page {
                             None => main_page(ui, l, &mut c),
@@ -294,6 +301,7 @@ pub fn show(l: &mut Lumen, root: &mut Ui) {
                         ui.add_space(bottom + 48.0);
                     });
                 });
+                l.settings_scrollers[pk] = sc;
             });
         });
     }

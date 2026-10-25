@@ -65,7 +65,7 @@ fn a(c: Color32, alpha: u8) -> Color32 {
     Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), alpha)
 }
 
-pub fn palette(cfg: &Config, dark: bool, phone: Option<Dynamic>) -> Palette {
+pub fn palette(cfg: &Config, dark: bool, phone: Option<Dynamic>, wallpaper_dark_text: bool) -> Palette {
     let d = dynamic_for(cfg, phone);
     let dim_alpha = (cfg.wallpaper_dim.clamp(0.0, 0.9) * 255.0) as u8;
     let scrim = if dark { Color32::from_black_alpha(dim_alpha) } else { Color32::from_white_alpha(dim_alpha) };
@@ -182,6 +182,10 @@ pub fn palette(cfg: &Config, dark: bool, phone: Option<Dynamic>) -> Palette {
             }
         }
         _ => {}
+    }
+    // text on the wallpaper follows the wallpaper, not the theme (that is what Pixel and Nothing do)
+    if cfg.preset != Preset::Ios {
+        p.home_text = if wallpaper_dark_text { Color32::from_rgb(24, 24, 28) } else { Color32::WHITE };
     }
     p
 }

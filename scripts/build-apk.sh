@@ -13,7 +13,7 @@ CODE="$(echo "$VERSION" | awk -F. '{print $1*10000+$2*100+$3}')"
 OUT="Lumen-$VERSION.apk"
 
 rm -rf build && mkdir -p build/classes build/dex build/apk
-cargo ndk -t arm64-v8a -o build/jniLibs build --release
+cargo ndk -t arm64-v8a -o build/jniLibs build --profile "${PROFILE:-release}"
 javac --release 11 -Xlint:-options -cp "$JAR" -d build/classes java/dev/voer/lumen/*.java
 "$BT/d8" --lib "$JAR" --release --min-api 26 --output build/dex build/classes/dev/voer/lumen/*.class
 "$BT/aapt2" compile --dir res -o build/res.zip

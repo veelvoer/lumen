@@ -74,10 +74,14 @@ impl Icons {
 
     /// Call once per frame: turns finished icons into textures.
     pub fn pump(&mut self) {
-        while let Ok(d) = self.rx.try_recv() {
+        // uploading a texture costs time on the drawing thread: a handful per frame keeps swipes smooth
+        let mut uploaded = 0;
+        while uploaded < 6 {
+            let Ok(d) = self.rx.try_recv() else { return };
             if d.generation != self.generation {
                 continue;
             }
+            uploaded += usize::from(d.img.is_some());
             self.pending.remove(&d.key);
             self.stale.remove(&d.key);
             if let Some((img, mono)) = d.img {
@@ -85,6 +89,8 @@ impl Icons {
                 self.tex.insert(d.key, Icon { tex, mono });
             }
         }
+        // more waiting: come back next frame
+        self.ctx.request_repaint();
     }
 
     pub fn get(&mut self, app: &App) -> Option<&Icon> {

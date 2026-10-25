@@ -210,7 +210,11 @@ pub fn search_pill(p: &Painter, rect: Rect, text: &str, cfg: &Config, pal: &Pale
     }
     let h = rect.height();
     glyph_at(p, pos2(rect.left() + 20.0, rect.center().y), Align2::LEFT_CENTER, egui_phosphor_glyph::MAGNIFYING_GLASS, (h * 0.42).max(17.0), pal.dim);
-    p.text(pos2(rect.left() + 20.0 + h * 0.42 + 14.0, rect.center().y), Align2::LEFT_CENTER, text, fonts::body(cfg, (h * 0.3).clamp(15.0, 17.0) * cfg.font_scale, false), pal.dim);
+    let text_x = rect.left() + 20.0 + h * 0.42 + 14.0;
+    let room = rect.right() - 20.0 - if trailing { 2.0 * (h * 0.42 + 18.0) } else { 0.0 } - text_x;
+    let font = fonts::body(cfg, (h * 0.3).clamp(15.0, 17.0) * cfg.font_scale, false);
+    let shown = fit(p, text, &font, room.max(40.0));
+    p.text(pos2(text_x, rect.center().y), Align2::LEFT_CENTER, shown, font, pal.dim);
     if trailing {
         glyph_at(p, pos2(rect.right() - 20.0, rect.center().y), Align2::RIGHT_CENTER, egui_phosphor_glyph::MICROPHONE, (h * 0.42).max(18.0), pal.dim);
         glyph_at(p, pos2(rect.right() - 20.0 - h * 0.42 - 18.0, rect.center().y), Align2::RIGHT_CENTER, egui_phosphor_glyph::CAMERA, (h * 0.42).max(18.0), pal.dim);

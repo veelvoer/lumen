@@ -11,7 +11,6 @@ use crate::update::Updater;
 use egui::{Context, Pos2, Rect, Vec2};
 use std::collections::HashMap;
 use std::sync::mpsc::{channel, Receiver};
-use std::time::{Duration, Instant};
 
 #[derive(PartialEq, Clone, Copy, Debug)]
 pub enum Screen {
@@ -110,6 +109,7 @@ pub struct Lumen {
     pub pal: Palette,
     pub phone_colors: Option<Dynamic>,
     pub system_dark: bool,
+    pub wallpaper_dark_text: bool,
     pub apps: Vec<App>,
     pub by_pkg: HashMap<String, usize>,
     apps_rx: Receiver<Vec<App>>,
@@ -145,7 +145,7 @@ pub struct Lumen {
     pub open_folder: Option<u32>,
     pub open_category: Option<Category>,
     pub folder_t: f32,
-    pub lib_scroll: f32,
+    pub lib_max: f32,
     pub menu: Option<Menu>,
     pub dialog: Option<Dialog>,
     pub widget_picker: bool,
@@ -157,6 +157,11 @@ pub struct Lumen {
     /// clicks right after a long press are not taps
     pub suppress_click: f64,
     pub drawer_scroll_to: Option<f32>,
+    pub scroller: crate::scroll::Scroller,
+    pub lib_scroller: crate::scroll::Scroller,
+    pub picker_scroller: crate::scroll::Scroller,
+    pub search_scroller: crate::scroll::Scroller,
+    pub settings_scrollers: Vec<crate::scroll::Scroller>,
 
     // phone state, refreshed now and then
     pub insets: Insets,
@@ -167,6 +172,8 @@ pub struct Lumen {
     last_offset: f32,
     last_blur: i32,
     last_bars: (bool, bool, bool),
+    last_light: Option<bool>,
+    perf: (f32, f32, u32, u32, f64),
     style_key: Option<String>,
 }
 
@@ -176,11 +183,12 @@ impl Lumen {
         let phone_colors = platform::dynamic_colors();
         let system_dark = platform::is_dark();
         let _ = (&cfg.mode, 0);
-        let pal = theme::palette(&cfg, cfg.dark(system_dark), phone_colors);
+        let pal = theme::palette(&cfg, cfg.dark(system_dark), phone_colors, false);
         let mut l = Lumen {
             pal,
             phone_colors,
             system_dark,
+            wallpaper_dark_text: false,
             icons: Some(Icons::new(ctx, icons::Style { shape: cfg.shape, radius: cfg.icon_radius, mono: cfg.themed_icons })),
             dir,
             apps: vec![],
@@ -215,7 +223,7 @@ impl Lumen {
             open_folder: None,
             open_category: None,
             folder_t: 0.0,
-            lib_scroll: 0.0,
+            lib_max: 0.0,
             menu: None,
             dialog: None,
             widget_picker: false,
@@ -226,6 +234,11 @@ impl Lumen {
             toast: None,
             suppress_click: 0.0,
             drawer_scroll_to: None,
+            scroller: Default::default(),
+            lib_scroller: Default::default(),
+            picker_scroller: Default::default(),
+            search_scroller: Default::default(),
+            settings_scrollers: vec![],
             insets: Insets::default(),
             clock: ClockInfo::default(),
             battery: Battery { level: 100, charging: false },
@@ -234,6 +247,8 @@ impl Lumen {
             last_offset: -1.0,
             last_blur: -1,
             last_bars: (false, false, false),
+            last_light: None,
+            perf: (0.0, 0.0, 0, 0, 0.0),
             style_key: None,
             cfg,
         };
@@ -255,7 +270,7 @@ impl Lumen {
 
     /// Applies colors and icon style after any change in the config.
     pub fn restyle(&mut self, ctx: &Context) {
-        self.pal = theme::palette(&self.cfg, self.dark(), self.phone_colors);
+        self.pal = theme::palette(&self.cfg, self.dark(), self.phone_colors, self.wallpaper_dark_text);
         theme::apply(ctx, &self.cfg, &self.pal);
         let mut st = ctx.global_style().as_ref().clone();
         st.spacing.item_spacing = egui::vec2(8.0, 8.0);
@@ -269,7 +284,6 @@ impl Lumen {
                 ic.restyle(style);
             }
         }
-        platform::set_light_bars(self.pal.light);
         self.feel = anim::feel(&self.cfg);
     }
 
@@ -295,6 +309,12 @@ impl Lumen {
                 }
             }
             self.cfg.known = self.apps.iter().map(|x| x.pkg.clone()).collect();
+            // load every icon in the background now, so the drawer never waits for one
+            if let Some(ic) = self.icons.as_mut() {
+                for a in &self.apps {
+                    ic.get(a);
+                }
+            }
             let known: std::collections::HashSet<&str> = self.apps.iter().map(|a| a.pkg.as_str()).collect();
             self.cfg.tidy(&|p| known.contains(p));
             self.dirty = true;
@@ -314,15 +334,24 @@ impl Lumen {
         if self.cfg.badges != crate::config::Badges::Off {
             self.badges = snap.badges.clone();
         }
-        if snap.dark != self.system_dark && snap.battery.is_some() {
+        if snap.battery.is_some() && (snap.dark != self.system_dark || snap.dark_text != self.wallpaper_dark_text) {
             self.system_dark = snap.dark;
+            self.wallpaper_dark_text = snap.dark_text;
             self.restyle(ctx);
+        }
+        // dark status bar icons only where the background is light: the settings sheet, or a light wallpaper
+        let covered = (self.screen == Screen::Settings && self.screen_t.x > 0.5) || self.drawer > 0.5 || self.search_open;
+        let want_light = if covered { self.pal.light } else { self.wallpaper_dark_text && self.cfg.preset != Preset::Ios };
+        if self.last_light != Some(want_light) {
+            self.last_light = Some(want_light);
+            self.bridge.light_bars(want_light);
         }
 
         let focused = ctx.input(|i| i.focused);
         if focused && !self.was_focused {
             self.apps_rx = spawn_app_scan(ctx);
             self.default_home = platform::is_default_home();
+            self.bridge.high_refresh();
         }
         self.was_focused = focused;
 
@@ -412,6 +441,7 @@ impl Lumen {
     pub fn close_drawer(&mut self, ctx: &Context) {
         self.drawer_open = false;
         self.query.clear();
+        self.scroller.reset();
         self.focus_search = false;
         ctx.memory_mut(|m| m.stop_text_input());
     }
@@ -496,13 +526,18 @@ impl Lumen {
             return;
         }
         if let Some(a) = self.app(pkg) {
+            log::info!("launch {pkg}");
             let k = ctx.pixels_per_point();
             match (from, self.cfg.launch_anim) {
                 (Some(r), crate::config::LaunchAnim::Zoom | crate::config::LaunchAnim::Reveal) => {
                     let reveal = self.cfg.launch_anim == crate::config::LaunchAnim::Reveal;
-                    platform::launch_from(a, [(r.left() * k) as i32, (r.top() * k) as i32, (r.width() * k) as i32, (r.height() * k) as i32], reveal);
+                    let (a, rect) = (a.clone(), [(r.left() * k) as i32, (r.top() * k) as i32, (r.width() * k) as i32, (r.height() * k) as i32]);
+                    crate::bridge::bg(move || platform::launch_from(&a, rect, reveal));
                 }
-                _ => platform::launch(a),
+                _ => {
+                    let a = a.clone();
+                    crate::bridge::bg(move || platform::launch(&a));
+                }
             }
             *self.cfg.launches.entry(pkg.to_string()).or_default() += 1;
             self.dirty = true;
@@ -520,8 +555,8 @@ impl Lumen {
             Action::None => {}
             Action::Drawer => self.drawer_open = true,
             Action::Search => self.open_search(),
-            Action::Notifications => platform::expand_notifications(),
-            Action::QuickSettings => platform::expand_quick_settings(),
+            Action::Notifications => crate::bridge::bg(platform::expand_notifications),
+            Action::QuickSettings => crate::bridge::bg(platform::expand_quick_settings),
             Action::LockScreen => {
                 if !platform::lock_screen() {
                     platform::ask_lock_access();
@@ -588,6 +623,7 @@ impl Lumen {
 
     pub fn frame(&mut self, root: &mut egui::Ui) {
         let ctx = root.ctx().clone();
+        self.log_frame_times(&ctx);
         self.tick(&ctx);
         let dt = ctx.input(|i| i.stable_dt).clamp(0.001, 0.05);
         self.screen_t.target = if self.screen == Screen::Settings { 1.0 } else { 0.0 };
@@ -603,6 +639,27 @@ impl Lumen {
             crate::settings::show(self, root);
         }
         self.save_if_dirty();
+    }
+}
+
+impl Lumen {
+    /// Writes one line a second to the log when frames were slow, so jank can be found on a real phone.
+    fn log_frame_times(&mut self, ctx: &Context) {
+        let dt = ctx.input(|i| i.unstable_dt);
+        if dt > 0.0 && dt < 0.2 {
+            self.perf.0 += dt;
+            self.perf.1 = self.perf.1.max(dt);
+            self.perf.2 += 1;
+            if dt > 0.0225 {
+                self.perf.3 += 1;
+            }
+        } else if self.perf.2 >= 4 {
+            // a pause ends a burst of animation: report how it went
+            log::info!("burst: {} frames, avg {:.1}ms, max {:.1}ms, slow {}", self.perf.2, self.perf.0 / self.perf.2 as f32 * 1000.0, self.perf.1 * 1000.0, self.perf.3);
+            self.perf = (0.0, 0.0, 0, 0, 0.0);
+        } else {
+            self.perf = (0.0, 0.0, 0, 0, 0.0);
+        }
     }
 }
 

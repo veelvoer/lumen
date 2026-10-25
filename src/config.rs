@@ -502,7 +502,7 @@ impl Config {
                 self.widget_radius = 28.0;
                 self.label_size = 12.0;
                 self.label_shadow = true;
-                self.drawer_opacity = 0.92;
+                self.drawer_opacity = 1.0;
                 self.drawer_scrubber = true;
                 self.page_effect = PageEffect::Parallax;
                 self.launch_anim = LaunchAnim::Reveal;
@@ -594,6 +594,12 @@ impl Config {
         if c.migrated < 1 {
             c.migrated = 1;
             c.drawer_scrubber = true;
+        }
+        if c.migrated < 4 {
+            c.migrated = 4;
+            if c.drawer_opacity < 1.0 && c.drawer_opacity > 0.9 {
+                c.drawer_opacity = 1.0;
+            }
         }
         if c.migrated < 3 {
             c.migrated = 3;

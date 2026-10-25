@@ -21,6 +21,7 @@ pub enum SettingsPage {
     Motion,
     Layout,
     Behavior,
+    Performance,
     Badges,
     Backup,
     Updates,
@@ -39,6 +40,7 @@ impl SettingsPage {
             SettingsPage::Motion => "Animations and feel",
             SettingsPage::Layout => "Layout and sizes",
             SettingsPage::Behavior => "Behavior",
+            SettingsPage::Performance => "Performance",
             SettingsPage::Badges => "Notification badges",
             SettingsPage::Backup => "Backup and reset",
             SettingsPage::Updates => "Updates",
@@ -50,8 +52,11 @@ impl SettingsPage {
 struct Ctl {
     ctx: Context,
     pal: crate::theme::Palette,
-    fcfg: Config,
+    fcfg: crate::app::Cfg,
     changed: bool,
+    /// a change that does not alter the look (behavior, gestures, performance) keeps the preset's name
+    keep_preset: bool,
+    restyle_preset: bool,
     preset: Option<Preset>,
     toast: Option<String>,
 }
@@ -228,7 +233,7 @@ pub fn show(l: &mut Lumen, root: &mut Ui) {
     let screen = ctx.content_rect();
     let k = ctx.pixels_per_point();
     let (top, bottom) = (l.insets.top / k, l.insets.bottom / k);
-    let mut c = Ctl { ctx: ctx.clone(), pal: l.pal, fcfg: l.cfg.clone(), changed: false, preset: None, toast: None };
+    let mut c = Ctl { ctx: ctx.clone(), pal: l.pal, fcfg: l.cfg.clone(), changed: false, keep_preset: true, restyle_preset: false, preset: None, toast: None };
     let before = (l.cfg.cols, l.cfg.rows, l.cfg.dock_slots);
 
     // how the whole screen arrives: iOS slides in from the right, Pixel rises and fades, Nothing just fades
@@ -282,6 +287,8 @@ pub fn show(l: &mut Lumen, root: &mut Ui) {
                 let body = ui.available_rect_before_wrap();
                 crate::scroll::show(ui, &mut sc, ("settings-scroll", pk), body, tc > 0.98, |ui| {
                     Frame::NONE.inner_margin(egui::Margin::symmetric(18, 0)).show(ui, |ui| {
+                        c.keep_preset = matches!(page, None | Some(SettingsPage::Performance | SettingsPage::Behavior | SettingsPage::Gestures | SettingsPage::Backup | SettingsPage::Updates | SettingsPage::About));
+                        let was_changed = c.changed;
                         match page {
                             None => main_page(ui, l, &mut c),
                             Some(SettingsPage::Look) => look_page(ui, l, &mut c),
@@ -293,10 +300,14 @@ pub fn show(l: &mut Lumen, root: &mut Ui) {
                             Some(SettingsPage::Motion) => motion_page(ui, l, &mut c),
                             Some(SettingsPage::Layout) => layout_page(ui, l, &mut c),
                             Some(SettingsPage::Behavior) => behavior_page(ui, l, &mut c),
+                            Some(SettingsPage::Performance) => performance_page(ui, l, &mut c),
                             Some(SettingsPage::Badges) => badges_page(ui, l, &mut c),
                             Some(SettingsPage::Backup) => backup_page(ui, l, &mut c),
                             Some(SettingsPage::Updates) => updates_page(ui, l, &mut c),
                             Some(SettingsPage::About) => about_page(ui, l, &mut c),
+                        }
+                        if c.changed && !was_changed && !c.keep_preset {
+                            c.restyle_preset = true;
                         }
                         ui.add_space(bottom + 48.0);
                     });
@@ -309,7 +320,7 @@ pub fn show(l: &mut Lumen, root: &mut Ui) {
     if let Some(p) = c.preset {
         l.cfg.apply_preset(p);
         c.changed = true;
-    } else if c.changed && l.cfg.preset != Preset::Custom {
+    } else if c.restyle_preset && l.cfg.preset != Preset::Custom {
         l.cfg.preset = Preset::Custom;
     }
     if c.changed {
@@ -355,6 +366,7 @@ fn main_page(ui: &mut Ui, l: &mut Lumen, c: &mut Ctl) {
         (ph::SPARKLE, "Animations and feel", "Spring style, speed, page effects, blur", SettingsPage::Motion, false),
         (ph::LAYOUT, "Layout and sizes", "Margins, dock, labels, widgets, folders", SettingsPage::Layout, false),
         (ph::SLIDERS_HORIZONTAL, "Behavior", "New apps, status bar, rotation, clock format", SettingsPage::Behavior, false),
+        (ph::LIGHTNING, "Performance", "Smooth mode for weaker phones, diagnostics", SettingsPage::Performance, false),
         (ph::BELL, "Notification badges", "Dots or counts on icons", SettingsPage::Badges, false),
         (ph::FLOPPY_DISK, "Backup and reset", "Copy your layout, restore it, start over", SettingsPage::Backup, false),
         (ph::DOWNLOAD_SIMPLE, "Updates", &format!("Lumen {}", l.version), SettingsPage::Updates, st.available.is_some()),
@@ -624,7 +636,7 @@ fn backup_page(ui: &mut Ui, l: &mut Lumen, c: &mut Ctl) {
     note(ui, c, "Copies your whole setup (look, layout, folders, names) as text. Paste it anywhere to keep it safe.");
     ui.add_space(8.0);
     if button(ui, c, ph::COPY_SIMPLE, "Copy backup", false) {
-        if let Ok(s) = serde_json::to_string(&l.cfg) {
+        if let Ok(s) = serde_json::to_string(&*l.cfg) {
             platform::clipboard_set(&s);
             c.toast = Some("Backup copied".into());
         }
@@ -632,7 +644,7 @@ fn backup_page(ui: &mut Ui, l: &mut Lumen, c: &mut Ctl) {
     if button(ui, c, ph::CLIPBOARD_TEXT, "Restore from clipboard", false) {
         match serde_json::from_str::<Config>(&platform::clipboard_get()) {
             Ok(cfg) => {
-                l.cfg = cfg;
+                l.cfg = crate::app::Cfg::new(cfg);
                 l.cfg.seeded = true;
                 c.changed = true;
                 c.toast = Some("Setup restored".into());
@@ -770,5 +782,32 @@ fn behavior_page(ui: &mut Ui, l: &mut Lumen, c: &mut Ctl) {
     }
     if button(ui, c, ph::DEVICE_MOBILE, "Phone settings", false) {
         platform::open_system_settings();
+    }
+}
+
+fn performance_page(ui: &mut Ui, l: &mut Lumen, c: &mut Ctl) {
+    section(ui, c, "Mode");
+    note(ui, c, "Light mode drops blur, shadows, page effects and extra animation so weaker phones stay smooth. Auto picks it for phones that need it and switches on by itself if the phone cannot keep up.");
+    ui.add_space(8.0);
+    chips(ui, c, &mut l.cfg.perf_mode, &[(PerfMode::Auto, "Auto"), (PerfMode::Full, "Full effects"), (PerfMode::Light, "Light")]);
+    ui.add_space(4.0);
+    ui.label(RichText::new(if l.light { "Light mode is on right now." } else { "Full effects are on right now." }).font(c.body(15.0, true)).color(c.pal.accent));
+    if l.cfg.light_learned && l.cfg.perf_mode == PerfMode::Auto {
+        ui.add_space(6.0);
+        note(ui, c, "Auto switched to light mode after seeing slow frames.");
+        if button(ui, c, ph::ARROW_COUNTER_CLOCKWISE, "Try full effects again", false) {
+            l.cfg.light_learned = false;
+            c.changed = true;
+        }
+    }
+    section(ui, c, "About this phone");
+    let report = l.diagnostics(&c.ctx);
+    for line in report.lines() {
+        ui.label(RichText::new(line).font(fonts::mono(12.5, false)).color(c.pal.dim));
+    }
+    ui.add_space(12.0);
+    if button(ui, c, ph::COPY_SIMPLE, "Copy this report", true) {
+        platform::clipboard_set(&report);
+        c.toast = Some("Report copied".into());
     }
 }

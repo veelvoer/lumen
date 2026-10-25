@@ -4,7 +4,7 @@ use super::PACKAGE;
 use jni::errors::Result as JResult;
 use jni::objects::{GlobalRef, JObject, JString, JValue};
 use jni::{JNIEnv, JavaVM};
-use super::{App, Battery, Category, Dynamic, Haptic, Insets, RawIcon, WidgetProvider};
+use super::{App, Battery, Category, DeviceInfo, Dynamic, Haptic, Insets, RawIcon, WidgetProvider};
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
@@ -100,7 +100,15 @@ pub fn launcher_apps() -> Vec<App> {
                 let (pkg, cls, label) = (jstr(env, &pkg), jstr(env, &cls), jstr(env, &label));
                 let key = label.to_lowercase();
                 let category = Category::from_android(cat, &pkg);
-                Ok(Some(App { pkg, cls, label, key, category }))
+                // the APK's modification time tells when the app was last updated
+                let src = env.get_field(&appinfo, "sourceDir", "Ljava/lang/String;")?.l()?;
+                let stamp = if src.is_null() {
+                    0
+                } else {
+                    let f = env.new_object("java/io/File", "(Ljava/lang/String;)V", &[JValue::Object(&src)])?;
+                    env.call_method(&f, "lastModified", "()J", &[])?.j().unwrap_or(0)
+                };
+                Ok(Some(App { pkg, cls, label, key, category, stamp }))
             });
             if let Ok(Some(a)) = r {
                 v.push(a);
@@ -231,7 +239,7 @@ pub fn pick_default_home() {
     });
 }
 
-/// System bars + display cutout, in physical pixels.
+/// System bars + display cutout (+ the keyboard), in physical pixels.
 pub fn insets() -> Insets {
     with(|env, act| {
         let win = env.call_method(act, "getWindow", "()Landroid/view/Window;", &[])?.l()?;
@@ -239,6 +247,11 @@ pub fn insets() -> Insets {
         let wi = env.call_method(&decor, "getRootWindowInsets", "()Landroid/view/WindowInsets;", &[])?.l()?;
         if wi.is_null() {
             return Ok(Insets::default());
+        }
+        if android_sdk() < 30 {
+            // older Android has no typed insets: the system window insets already include the keyboard
+            let g = |env: &mut JNIEnv, n: &str| env.call_method(&wi, n, "()I", &[]).and_then(|v| v.i()).map(|v| v as f32);
+            return Ok(Insets { left: g(env, "getSystemWindowInsetLeft")?, top: g(env, "getSystemWindowInsetTop")?, right: g(env, "getSystemWindowInsetRight")?, bottom: g(env, "getSystemWindowInsetBottom")? });
         }
         let sb = env.call_static_method("android/view/WindowInsets$Type", "systemBars", "()I", &[])?.i()?;
         let dc = env.call_static_method("android/view/WindowInsets$Type", "displayCutout", "()I", &[])?.i()?;
@@ -776,10 +789,10 @@ pub fn wallpaper_dark_text() -> bool {
 }
 
 /// Runs the screen at its fastest mode (120 Hz on this kind of phone) while Lumen is in front.
-pub fn request_high_refresh() {
+pub fn request_high_refresh(on: bool) {
     with(|env, act| {
         let cls = glue(env, act, "dev.voer.lumen.Glue")?;
-        env.call_static_method(&cls, "highRefresh", "(Landroid/app/Activity;)V", &[JValue::Object(act)])?;
+        env.call_static_method(&cls, "highRefresh", "(Landroid/app/Activity;Z)V", &[JValue::Object(act), JValue::Bool(on as u8)])?;
         Ok(())
     });
 }
@@ -891,4 +904,45 @@ pub fn take_widget_result() -> String {
         Ok(jstr(env, &s))
     })
     .unwrap_or_default()
+}
+
+/// Makes the calling thread a background one, so it never steals time from drawing.
+pub fn background_thread() {
+    with(|env, _| {
+        env.call_static_method("android/os/Process", "setThreadPriority", "(I)V", &[JValue::Int(10)])?;
+        Ok(())
+    });
+}
+
+pub fn device_info() -> DeviceInfo {
+    with(|env, act| {
+        let s = |env: &mut JNIEnv, f: &str| -> JResult<String> {
+            let v = env.get_static_field("android/os/Build", f, "Ljava/lang/String;")?.l()?;
+            Ok(jstr(env, &v))
+        };
+        let model = s(env, "MODEL")?;
+        let manufacturer = s(env, "MANUFACTURER")?;
+        let n = env.new_string("activity")?;
+        let am = env.call_method(act, "getSystemService", "(Ljava/lang/String;)Ljava/lang/Object;", &[JValue::Object(&n)])?.l()?;
+        let mi = env.new_object("android/app/ActivityManager$MemoryInfo", "()V", &[])?;
+        env.call_method(&am, "getMemoryInfo", "(Landroid/app/ActivityManager$MemoryInfo;)V", &[JValue::Object(&mi)])?;
+        let total = env.get_field(&mi, "totalMem", "J")?.j()?;
+        let low_ram = env.call_method(&am, "isLowRamDevice", "()Z", &[])?.z()?;
+        let refresh = env
+            .call_method(act, "getDisplay", "()Landroid/view/Display;", &[])
+            .and_then(|d| d.l())
+            .and_then(|d| env.call_method(&d, "getRefreshRate", "()F", &[]))
+            .and_then(|f| f.f())
+            .unwrap_or(60.0);
+        Ok(DeviceInfo { model, manufacturer, sdk: android_sdk(), ram_mb: total / (1024 * 1024), low_ram, refresh_hz: refresh })
+    })
+    .unwrap_or_default()
+}
+
+pub fn refresh_rate() -> f32 {
+    with(|env, act| {
+        let d = env.call_method(act, "getDisplay", "()Landroid/view/Display;", &[])?.l()?;
+        env.call_method(&d, "getRefreshRate", "()F", &[])?.f()
+    })
+    .unwrap_or(60.0)
 }

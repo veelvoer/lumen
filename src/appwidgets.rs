@@ -107,7 +107,7 @@ impl AppWidgets {
         let mut asked = self.asked.borrow_mut();
         let due = match asked.get(&wid) {
             None => true,
-            Some((t, aw, ah)) => now - t > 1.0 || *aw != w || *ah != h,
+            Some((t, aw, ah)) => now - t > if crate::perf::light() { 2.5 } else { 1.0 } || *aw != w || *ah != h,
         };
         if due {
             asked.insert(wid, (now, w, h));

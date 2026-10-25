@@ -12,6 +12,7 @@ mod fonts;
 mod home;
 mod icons;
 mod menu;
+mod perf;
 mod phosphor;
 mod scroll;
 mod platform;
@@ -36,8 +37,15 @@ mod entry {
             [0.0, 0.0, 0.0, 0.0] // see-through, so the system wallpaper shows
         }
 
-        fn ui(&mut self, ui: &mut egui::Ui, _: &mut eframe::Frame) {
-            self.0.frame(ui);
+        fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+            if let Some(c) = frame.info().cpu_usage {
+                self.0.note_cpu(c);
+            }
+            // a bug must never take the home screen down with it: skip the frame, reset what was in flight
+            let l = &mut self.0;
+            if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| l.frame(ui))).is_err() {
+                l.recover();
+            }
         }
     }
 
@@ -61,8 +69,15 @@ mod entry {
             "Lumen",
             options,
             Box::new(move |cc| {
-                fonts::install(&cc.egui_ctx);
+                fonts::install(&cc.egui_ctx, 0);
                 let mut l = Lumen::new(&cc.egui_ctx, dir);
+                if let Some(gl) = cc.gl.as_ref() {
+                    use eframe::glow::HasContext;
+                    let renderer = unsafe { gl.get_parameter_string(eframe::glow::RENDERER) };
+                    let version = unsafe { gl.get_parameter_string(eframe::glow::VERSION) };
+                    log::info!("gl: {renderer} / {version}");
+                    l.set_gpu(&cc.egui_ctx, &format!("{renderer} ({version})"));
+                }
                 if l.cfg.auto_update && l.cfg.last_check + 6 * 3600 < now_secs() {
                     let ctx = cc.egui_ctx.clone();
                     l.upd.check(move || ctx.request_repaint());
@@ -80,5 +95,5 @@ mod entry {
 
 /// For tests and screenshots on a desktop.
 pub fn install_fonts(ctx: &egui::Context) {
-    fonts::install(ctx);
+    fonts::install(ctx, 0);
 }

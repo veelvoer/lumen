@@ -1,6 +1,6 @@
 //! Desktop stand-in for the phone: a fixed list of apps with drawn icons.
 
-use super::{App, Battery, Category, Dynamic, Haptic, Insets, RawIcon, WidgetProvider};
+use super::{App, Battery, Category, DeviceInfo, Dynamic, Haptic, Insets, RawIcon, WidgetProvider};
 use std::collections::HashMap;
 
 const APPS: [(&str, &str, [u8; 3], Category); 45] = [
@@ -65,7 +65,7 @@ pub fn version_name() -> String {
 }
 
 pub fn launcher_apps() -> Vec<App> {
-    let mut v: Vec<App> = APPS.iter().map(|(p, l, _, c)| App { pkg: p.to_string(), cls: "Main".into(), label: l.to_string(), key: l.to_lowercase(), category: *c }).collect();
+    let mut v: Vec<App> = APPS.iter().map(|(p, l, _, c)| App { pkg: p.to_string(), cls: "Main".into(), label: l.to_string(), key: l.to_lowercase(), category: *c, stamp: 0 }).collect();
     v.sort_by(|a, b| a.key.cmp(&b.key));
     v
 }
@@ -217,7 +217,7 @@ pub fn wallpaper_dark_text() -> bool {
     std::env::var("LUMEN_DARK_TEXT").is_ok()
 }
 
-pub fn request_high_refresh() {}
+pub fn request_high_refresh(_: bool) {}
 
 pub fn widget_providers() -> Vec<WidgetProvider> {
     vec![
@@ -260,4 +260,14 @@ pub fn widget_render(id: i32, w: i32, h: i32) -> Option<RawIcon> {
 pub fn widget_touch(_: i32, _: i32, _: f32, _: f32) {}
 pub fn take_widget_result() -> String {
     String::new()
+}
+
+pub fn background_thread() {}
+
+pub fn device_info() -> DeviceInfo {
+    DeviceInfo { model: "Desktop".into(), manufacturer: "Mock".into(), sdk: 36, ram_mb: 16384, low_ram: false, refresh_hz: 60.0 }
+}
+
+pub fn refresh_rate() -> f32 {
+    60.0
 }

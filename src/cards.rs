@@ -25,8 +25,9 @@ pub fn paint(p: &Painter, rect: Rect, kind: WidgetKind, cfg: &Config, pal: &Pale
         WidgetKind::Glance => {
             // Pixel "At a glance": the date, big, left aligned, with one quiet line under it
             let x = r.left() + 14.0;
-            p.text(pos2(x, r.top() + 8.0), Align2::LEFT_TOP, c.date(), fonts::body(cfg, 31.0 * fs, false), pal.home_text);
-            let line = pos2(x + 1.0, r.top() + 50.0);
+            let k = (r.height() / 86.0).clamp(0.55, 1.0);
+            p.text(pos2(x, r.top() + 4.0 * k), Align2::LEFT_TOP, c.date(), fonts::body(cfg, 31.0 * fs * k, false), pal.home_text);
+            let line = pos2(x + 1.0, r.top() + 50.0 * k);
             let b = live.battery;
             let icon = if b.charging { ph::BATTERY_CHARGING } else if b.level < 20 { ph::BATTERY_LOW } else { ph::BATTERY_FULL };
             widgets::glyph_at(p, line, Align2::LEFT_CENTER, icon, 16.0, pal.home_text);

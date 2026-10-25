@@ -110,14 +110,14 @@ pub fn resolve_style(cfg: &Config) -> AnimStyle {
     }
 }
 
-pub fn feel(cfg: &Config) -> Feel {
+pub fn feel(cfg: &Config, light: bool) -> Feel {
     let base = match resolve_style(cfg) {
         AnimStyle::Off => return Feel { page: t(0.0, 1.0), drawer: t(0.0, 1.0), popup: t(0.0, 1.0), item: t(0.0, 1.0), press: t(0.0, 1.0), menu: t(0.0, 1.0), screen: t(0.0, 1.0) },
         AnimStyle::Bouncy => Feel { page: t(0.44, 1.0), drawer: t(0.46, 0.9), popup: t(0.42, 0.72), item: t(0.38, 0.7), press: t(0.22, 0.7), menu: t(0.34, 0.7), screen: t(0.44, 0.92) },
         AnimStyle::Snappy => Feel { page: t(0.26, 1.0), drawer: t(0.28, 1.0), popup: t(0.22, 1.0), item: t(0.22, 0.95), press: t(0.12, 1.0), menu: t(0.18, 1.0), screen: t(0.26, 1.0) },
         _ => Feel { page: t(0.38, 0.96), drawer: t(0.42, 0.92), popup: t(0.34, 0.86), item: t(0.30, 0.82), press: t(0.18, 0.9), menu: t(0.28, 0.84), screen: t(0.40, 0.96) },
     };
-    let s = cfg.anim_speed.clamp(0.25, 4.0);
+    let s = cfg.anim_speed.clamp(0.25, 4.0) * if light { 1.25 } else { 1.0 };
     let f = |x: Tune| Tune { response: x.response / s, damping: x.damping };
     Feel { page: f(base.page), drawer: f(base.drawer), popup: f(base.popup), item: f(base.item), press: f(base.press), menu: f(base.menu), screen: f(base.screen) }
 }

@@ -1,17 +1,23 @@
-//! Icons are loaded on two worker threads the moment they are first needed, masked to the chosen
-//! shape in Rust, and kept as GPU textures. The UI thread never waits for Android.
+//! App icons, built to be cheap on weak phones:
+//!  * they are loaded on background threads at low priority, nothing on the drawing thread waits for Android;
+//!  * what Android hands over is cached on disk, so the next start needs no Java at all;
+//!  * they live in a few big atlas textures, so a whole screen of icons is one or two draw calls;
+//!  * their pixel size follows the screen density instead of a fixed large size.
 
 use crate::config::Shape;
 use crate::platform::{self, App};
-use egui::{ColorImage, Context, TextureHandle, TextureOptions};
-use std::collections::{HashMap, HashSet};
+use egui::{pos2, ColorImage, Context, Rect, TextureHandle, TextureId, TextureOptions};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
-pub const ICON_PX: i32 = 168;
+const PAGE: usize = 1024;
 
+#[derive(Clone, Copy)]
 pub struct Icon {
-    pub tex: TextureHandle,
+    pub tex: TextureId,
+    pub uv: Rect,
     /// only the glyph, to be tinted and put on a plate
     pub mono: bool,
 }
@@ -21,6 +27,8 @@ pub struct Style {
     pub shape: Shape,
     pub radius: f32,
     pub mono: bool,
+    /// side of the icon bitmaps in pixels
+    pub px: i32,
 }
 
 struct Req {
@@ -35,10 +43,25 @@ struct Done {
     img: Option<(ColorImage, bool)>,
 }
 
+#[derive(Clone, Copy)]
+struct Slot {
+    page: usize,
+    x: usize,
+    y: usize,
+    mono: bool,
+}
+
 pub struct Icons {
-    tex: HashMap<String, Icon>,
+    pages: Vec<TextureHandle>,
+    slots: HashMap<String, Slot>,
+    next_slot: usize,
     pending: HashSet<String>,
     stale: HashSet<String>,
+    /// apps whose icon Android could not give us: not asked again until the style changes
+    failed: HashSet<String>,
+    queue: VecDeque<App>,
+    /// the first two atlas cells hold a plain plate and a thin ring in the icon shape, so plates batch with icons
+    plate_ready: bool,
     tx: Sender<Req>,
     rx: Receiver<Done>,
     ctx: Context,
@@ -46,69 +69,255 @@ pub struct Icons {
     generation: u32,
 }
 
+/// Rounds the icon pixel size to a multiple of 8, no bigger than needed for crisp drawing.
+pub fn px_for(icon_dp: f32, ppp: f32) -> i32 {
+    (((icon_dp * ppp * 1.12) / 8.0).ceil() as i32 * 8).clamp(64, 192)
+}
+
+fn hash(s: &str) -> String {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in s.bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    format!("{h:016x}")
+}
+
+fn cache_file(dir: &std::path::Path, app: &App, px: i32, mono: bool) -> PathBuf {
+    dir.join(hash(&format!("{}|{}|{}|{}|{}|v2", app.pkg, app.cls, app.stamp, px, mono)))
+}
+
+fn read_cache(path: &std::path::Path, px: i32) -> Option<platform::RawIcon> {
+    let b = std::fs::read(path).ok()?;
+    if b.len() < 2 || b[0] != 1 {
+        return None;
+    }
+    let rgba = b[2..].to_vec();
+    (rgba.len() == (px * px * 4) as usize).then_some(platform::RawIcon { size: px as usize, rgba, mono: b[1] == 1 })
+}
+
+fn write_cache(path: &std::path::Path, r: &platform::RawIcon) {
+    let mut b = Vec::with_capacity(2 + r.rgba.len());
+    b.push(1);
+    b.push(u8::from(r.mono));
+    b.extend_from_slice(&r.rgba);
+    let tmp = path.with_extension("tmp");
+    if std::fs::write(&tmp, b).is_ok() {
+        let _ = std::fs::rename(tmp, path);
+    }
+}
+
 impl Icons {
-    pub fn new(ctx: &Context, style: Style) -> Icons {
+    pub fn new(ctx: &Context, style: Style, cache_dir: String) -> Icons {
+        let dir = PathBuf::from(cache_dir).join("icon-cache");
+        let _ = std::fs::create_dir_all(&dir);
         let (tx, rx_req) = channel::<Req>();
         let (tx_done, rx) = channel::<Done>();
         let rx_req = Arc::new(Mutex::new(rx_req));
-        for _ in 0..2 {
-            let (rx_req, tx_done, ctx) = (rx_req.clone(), tx_done.clone(), ctx.clone());
-            std::thread::spawn(move || loop {
-                let req = match rx_req.lock().map(|r| r.recv()) {
-                    Ok(Ok(r)) => r,
-                    _ => return,
-                };
-                let img = platform::load_icon(&req.app, ICON_PX, req.style.mono).map(|raw| {
-                    let mut rgba = raw.rgba;
-                    if !raw.mono {
-                        mask(&mut rgba, raw.size, req.style);
-                    }
-                    (ColorImage::from_rgba_premultiplied([raw.size, raw.size], &rgba), raw.mono)
-                });
-                let _ = tx_done.send(Done { key: req.app.pkg.clone(), generation: req.generation, img });
-                ctx.request_repaint();
+        let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+        for _ in 0..if cores > 4 { 2 } else { 1 } {
+            let (rx_req, tx_done, ctx, dir) = (rx_req.clone(), tx_done.clone(), ctx.clone(), dir.clone());
+            std::thread::spawn(move || {
+                // loading icons must never compete with drawing
+                platform::background_thread();
+                loop {
+                    let req = match rx_req.lock().map(|r| r.recv()) {
+                        Ok(Ok(r)) => r,
+                        _ => return,
+                    };
+                    let path = cache_file(&dir, &req.app, req.style.px, req.style.mono);
+                    let raw = std::panic::catch_unwind(|| {
+                        read_cache(&path, req.style.px).or_else(|| {
+                            let r = platform::load_icon(&req.app, req.style.px, req.style.mono)?;
+                            write_cache(&path, &r);
+                            Some(r)
+                        })
+                    })
+                    .unwrap_or(None);
+                    let img = raw.map(|raw| {
+                        let mut rgba = raw.rgba;
+                        if !raw.mono {
+                            mask(&mut rgba, raw.size, req.style);
+                        }
+                        (ColorImage::from_rgba_premultiplied([raw.size, raw.size], &rgba), raw.mono)
+                    });
+                    let _ = tx_done.send(Done { key: req.app.pkg.clone(), generation: req.generation, img });
+                    ctx.request_repaint();
+                }
             });
         }
-        Icons { tex: HashMap::new(), pending: HashSet::new(), stale: HashSet::new(), tx, rx, ctx: ctx.clone(), style, generation: 0 }
+        Icons { pages: vec![], slots: HashMap::new(), next_slot: 2, plate_ready: false, pending: HashSet::new(), stale: HashSet::new(), failed: HashSet::new(), queue: VecDeque::new(), tx, rx, ctx: ctx.clone(), style, generation: 0 }
     }
 
-    /// Call once per frame: turns finished icons into textures.
+    fn cell(&self) -> usize {
+        self.style.px as usize + 2
+    }
+
+    fn per_row(&self) -> usize {
+        PAGE / self.cell()
+    }
+
+    fn per_page(&self) -> usize {
+        self.per_row() * self.per_row()
+    }
+
+    fn alloc(&mut self) -> (usize, usize, usize) {
+        let idx = self.next_slot;
+        self.next_slot += 1;
+        let (pp, pr) = (self.per_page(), self.per_row());
+        let (page, local) = (idx / pp, idx % pp);
+        while self.pages.len() <= page {
+            let n = self.pages.len();
+            let blank = ColorImage::filled([PAGE, PAGE], egui::Color32::TRANSPARENT);
+            self.pages.push(self.ctx.load_texture(format!("icons{n}"), blank, TextureOptions::LINEAR));
+        }
+        let c = self.cell();
+        (page, (local % pr) * c, (local / pr) * c)
+    }
+
+    fn cell_pos(&mut self, idx: usize) -> (usize, usize, usize) {
+        let (pp, pr) = (self.per_page(), self.per_row());
+        let (page, local) = (idx / pp, idx % pp);
+        while self.pages.len() <= page {
+            let n = self.pages.len();
+            let blank = ColorImage::filled([PAGE, PAGE], egui::Color32::TRANSPARENT);
+            self.pages.push(self.ctx.load_texture(format!("icons{n}"), blank, TextureOptions::LINEAR));
+        }
+        let c = self.cell();
+        (page, (local % pr) * c, (local / pr) * c)
+    }
+
+    fn make_plates(&mut self) {
+        let size = self.style.px as usize;
+        let half = size as f32 / 2.0;
+        let mut fill = vec![0u8; size * size * 4];
+        let mut ring = vec![0u8; size * size * 4];
+        for y in 0..size {
+            for x in 0..size {
+                let d = distance(self.style, half, x as f32 + 0.5 - half, y as f32 + 0.5 - half);
+                let a_fill = (0.5 - d).clamp(0.0, 1.0);
+                let a_inner = (0.5 - (d + 1.6)).clamp(0.0, 1.0);
+                let o = (y * size + x) * 4;
+                let f = (a_fill * 255.0) as u8;
+                fill[o..o + 4].copy_from_slice(&[f, f, f, f]);
+                let r = ((a_fill - a_inner).max(0.0) * 255.0) as u8;
+                ring[o..o + 4].copy_from_slice(&[r, r, r, r]);
+            }
+        }
+        for (i, data) in [fill, ring].into_iter().enumerate() {
+            let (page, x, y) = self.cell_pos(i);
+            let img = ColorImage::from_rgba_premultiplied([size, size], &data);
+            self.pages[page].set_partial([x + 1, y + 1], img, TextureOptions::LINEAR);
+        }
+        self.plate_ready = true;
+    }
+
+    /// (plate, ring) shapes to tint, once they are in the atlas.
+    pub fn plates(&self) -> Option<(Icon, Icon)> {
+        if !self.plate_ready || self.pages.is_empty() {
+            return None;
+        }
+        let px = self.style.px as f32;
+        let c = self.cell();
+        let (pp, pr) = (self.per_page(), self.per_row());
+        let at = |idx: usize| {
+            let (page, local) = (idx / pp, idx % pp);
+            let (x, y) = (((local % pr) * c + 1) as f32, ((local / pr) * c + 1) as f32);
+            Icon { tex: self.pages[page].id(), uv: Rect::from_min_max(pos2(x / PAGE as f32, y / PAGE as f32), pos2((x + px) / PAGE as f32, (y + px) / PAGE as f32)), mono: false }
+        };
+        Some((at(0), at(1)))
+    }
+
+    /// Call once per frame: puts finished icons into the atlas. A handful per frame keeps swipes smooth.
     pub fn pump(&mut self) {
-        // uploading a texture costs time on the drawing thread: a handful per frame keeps swipes smooth
+        if !self.plate_ready {
+            self.make_plates();
+        }
         let mut uploaded = 0;
         while uploaded < 6 {
             let Ok(d) = self.rx.try_recv() else { return };
             if d.generation != self.generation {
                 continue;
             }
-            uploaded += usize::from(d.img.is_some());
             self.pending.remove(&d.key);
             self.stale.remove(&d.key);
+            if d.img.is_none() {
+                self.failed.insert(d.key.clone());
+            }
             if let Some((img, mono)) = d.img {
-                let tex = self.ctx.load_texture(format!("icon:{}", d.key), img, TextureOptions::LINEAR);
-                self.tex.insert(d.key, Icon { tex, mono });
+                let slot = match self.slots.get(&d.key) {
+                    Some(s) => *s,
+                    None => {
+                        let (page, x, y) = self.alloc();
+                        Slot { page, x, y, mono }
+                    }
+                };
+                self.pages[slot.page].set_partial([slot.x + 1, slot.y + 1], img, TextureOptions::LINEAR);
+                self.slots.insert(d.key, Slot { mono, ..slot });
+                uploaded += 1;
             }
         }
-        // more waiting: come back next frame
         self.ctx.request_repaint();
     }
 
-    pub fn get(&mut self, app: &App) -> Option<&Icon> {
-        if (!self.tex.contains_key(&app.pkg) || self.stale.contains(&app.pkg)) && self.pending.insert(app.pkg.clone()) {
+    pub fn get(&mut self, app: &App) -> Option<Icon> {
+        if (!self.slots.contains_key(&app.pkg) || self.stale.contains(&app.pkg)) && !self.failed.contains(&app.pkg) && self.pending.insert(app.pkg.clone()) {
             let _ = self.tx.send(Req { app: app.clone(), style: self.style, generation: self.generation });
         }
-        self.tex.get(&app.pkg)
+        let s = self.slots.get(&app.pkg)?;
+        let px = self.style.px as f32;
+        let (x, y) = ((s.x + 1) as f32, (s.y + 1) as f32);
+        let uv = Rect::from_min_max(pos2(x / PAGE as f32, y / PAGE as f32), pos2((x + px) / PAGE as f32, (y + px) / PAGE as f32));
+        Some(Icon { tex: self.pages[s.page].id(), uv, mono: s.mono })
     }
 
-    /// Shape or style changed: reload what is on screen, keep the old pictures until the new ones arrive.
+    /// Queue every app for loading, a few at a time and only while nothing is moving.
+    pub fn prefetch_all(&mut self, apps: &[App]) {
+        self.queue = apps.iter().filter(|a| !self.slots.contains_key(&a.pkg)).cloned().collect();
+    }
+
+    pub fn prefetch_step(&mut self, idle: bool) {
+        if !idle {
+            return;
+        }
+        let mut n = 0;
+        while self.pending.len() < 3 && n < 2 {
+            let Some(a) = self.queue.pop_front() else { break };
+            self.get(&a);
+            n += 1;
+        }
+        if !self.queue.is_empty() {
+            self.ctx.request_repaint_after(std::time::Duration::from_millis(40));
+        }
+    }
+
+    /// Shape, color style or size changed: reload what is on screen, keep the old pictures until the new ones arrive.
     pub fn restyle(&mut self, style: Style) {
         if style == self.style {
             return;
         }
+        if style.px != self.style.px {
+            // different bitmap size: the atlas layout changes, start a new one
+            self.pages.clear();
+            self.slots.clear();
+            self.next_slot = 2;
+        } else {
+            self.stale = self.slots.keys().cloned().collect();
+        }
+        self.plate_ready = false;
         self.style = style;
         self.generation += 1;
         self.pending.clear();
-        self.stale = self.tex.keys().cloned().collect();
+        self.failed.clear();
+    }
+
+    /// True when Android could not produce this app's icon (a letter is drawn instead).
+    pub fn failed(&self, pkg: &str) -> bool {
+        self.failed.contains(pkg)
+    }
+
+    pub fn stats(&self) -> (usize, usize, i32) {
+        (self.pages.len(), self.slots.len(), self.style.px)
     }
 
     pub fn pending_count(&self) -> usize {

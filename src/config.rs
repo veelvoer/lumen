@@ -99,6 +99,14 @@ pub enum AnimStyle {
     Off,
 }
 
+/// How much work Lumen does to look good. Auto picks from the phone and from how it is keeping up.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PerfMode {
+    Auto,
+    Full,
+    Light,
+}
+
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PageEffect {
     Slide,
@@ -262,6 +270,9 @@ pub struct Config {
     pub icon_radius: f32,
     /// dp
     pub icon_size: f32,
+    /// icon size actually used: icon_size, shrunk when the screen is too small for it (not saved)
+    #[serde(skip)]
+    pub icon_eff: f32,
     pub cols: usize,
     pub rows: usize,
     pub dock_slots: usize,
@@ -291,6 +302,9 @@ pub struct Config {
     pub launch_anim: LaunchAnim,
     pub blur: f32,
     pub haptics: bool,
+    pub perf_mode: PerfMode,
+    /// Auto mode saw the phone struggle and switched to Light; remembered between starts
+    pub light_learned: bool,
     // layout details
     pub margin_side: f32,
     pub margin_top: f32,
@@ -340,6 +354,7 @@ impl Default for Config {
             shape: Shape::Circle,
             icon_radius: 1.0,
             icon_size: 56.0,
+            icon_eff: 0.0,
             cols: 5,
             rows: 5,
             dock_slots: 4,
@@ -368,6 +383,8 @@ impl Default for Config {
             launch_anim: LaunchAnim::Zoom,
             blur: 1.0,
             haptics: true,
+            perf_mode: PerfMode::Auto,
+            light_learned: false,
             margin_side: 0.0,
             margin_top: 0.0,
             margin_bottom: 0.0,
@@ -473,7 +490,7 @@ impl Config {
                 self.widget_radius = 28.0;
                 self.label_size = 12.0;
                 self.label_shadow = true;
-                self.drawer_opacity = 1.0;
+                self.drawer_opacity = 0.92;
                 self.drawer_scrubber = false;
                 self.page_effect = PageEffect::Parallax;
                 self.launch_anim = LaunchAnim::Reveal;
@@ -566,6 +583,10 @@ impl Config {
     }
 
     // ───────────────────────────── layout ─────────────────────────────
+
+    pub fn eff(&self) -> f32 {
+        if self.icon_eff > 0.0 { self.icon_eff } else { self.icon_size }
+    }
 
     pub fn per_page(&self) -> usize {
         self.cols * self.rows

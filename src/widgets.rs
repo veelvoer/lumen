@@ -75,11 +75,13 @@ pub fn cr(r: f32) -> CornerRadius {
 }
 
 pub fn shadow(p: &Painter, rect: Rect, radius: f32, strength: u8) {
+    if crate::perf::light() {
+        return;
+    }
     p.add(Shadow { offset: [0, 6], blur: 20, spread: 0, color: Color32::from_black_alpha(strength) }.as_shape(rect, cr(radius)));
 }
 
-fn textured(p: &Painter, tex: egui::TextureId, rect: Rect, tint: Color32, rot: f32) {
-    let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+fn textured(p: &Painter, tex: egui::TextureId, uv: Rect, rect: Rect, tint: Color32, rot: f32) {
     if rot == 0.0 {
         p.image(tex, rect, uv, tint);
     } else {
@@ -98,15 +100,31 @@ pub fn app_icon(p: &Painter, rect: Rect, app: &App, icons: &mut Icons, cfg: &Con
     let fade = |c: Color32| c.gamma_multiply(alpha);
     match icons.get(app) {
         Some(ic) if ic.mono => {
-            p.rect_filled(rect, cr(radius), fade(pal.plate));
-            if cfg.preset == Preset::Nothing {
-                p.rect_stroke(rect, cr(radius), Stroke::new(1.0, fade(pal.glass_line)), StrokeKind::Inside);
+            match icons.plates() {
+                Some((plate, ring)) => {
+                    // textured, so plates and glyphs are drawn in one go
+                    textured(p, plate.tex, plate.uv, rect, fade(pal.plate), rot);
+                    if cfg.preset == Preset::Nothing {
+                        textured(p, ring.tex, ring.uv, rect, fade(pal.glass_line), rot);
+                    }
+                }
+                None => {
+                    p.rect_filled(rect, cr(radius), fade(pal.plate));
+                    if cfg.preset == Preset::Nothing {
+                        p.rect_stroke(rect, cr(radius), Stroke::new(1.0, fade(pal.glass_line)), StrokeKind::Inside);
+                    }
+                }
             }
-            textured(p, ic.tex.id(), rect.shrink(rect.width() * 0.13), fade(pal.glyph), rot);
+            textured(p, ic.tex, ic.uv, rect.shrink(rect.width() * 0.13), fade(pal.glyph), rot);
         }
-        Some(ic) => textured(p, ic.tex.id(), rect, Color32::WHITE.gamma_multiply(alpha), rot),
+        Some(ic) => textured(p, ic.tex, ic.uv, rect, Color32::WHITE.gamma_multiply(alpha), rot),
         None => {
             p.rect_filled(rect, cr(radius), fade(pal.card));
+            if icons.failed(&app.pkg) {
+                // Android had no picture for this app: a letter on a plate beats an empty hole
+                let letter: String = app.label.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default();
+                p.text(rect.center(), Align2::CENTER_CENTER, letter, fonts::body(cfg, rect.width() * 0.46, true), fade(pal.text));
+            }
         }
     }
 }
@@ -115,7 +133,27 @@ pub fn text_width(p: &Painter, text: &str, font: &egui::FontId) -> f32 {
     p.layout_no_wrap(text.to_string(), font.clone(), Color32::WHITE).size().x
 }
 
+thread_local! {
+    static FIT_CACHE: std::cell::RefCell<std::collections::HashMap<(String, i32, i32), String>> = Default::default();
+}
+
 pub fn fit(p: &Painter, text: &str, font: &egui::FontId, max_w: f32) -> String {
+    let key = (text.to_string(), max_w.round() as i32, (font.size * 10.0) as i32);
+    if let Some(s) = FIT_CACHE.with(|c| c.borrow().get(&key).cloned()) {
+        return s;
+    }
+    let out = fit_uncached(p, text, font, max_w);
+    FIT_CACHE.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.len() > 2000 {
+            c.clear();
+        }
+        c.insert(key, out.clone());
+    });
+    out
+}
+
+fn fit_uncached(p: &Painter, text: &str, font: &egui::FontId, max_w: f32) -> String {
     if text_width(p, text, font) <= max_w {
         return text.to_string();
     }
@@ -131,10 +169,40 @@ pub fn fit(p: &Painter, text: &str, font: &egui::FontId, max_w: f32) -> String {
     "…".into()
 }
 
+/// App names collected while icons are drawn, then drawn together: a screen of icons and names is then a handful
+/// of draw calls instead of one per icon and one per name, which matters a lot on weak graphics chips.
+#[derive(Default)]
+pub struct Labels {
+    items: Vec<(Pos2, String, Color32, f32, bool, f32)>,
+}
+
+impl Labels {
+    pub fn push(&mut self, center_top: Pos2, text: &str, color: Color32, max_w: f32, shadow: bool, alpha: f32) {
+        self.items.push((center_top, text.to_string(), color, max_w, shadow, alpha));
+    }
+
+    pub fn flush(&mut self, p: &Painter, cfg: &Config) {
+        let font = fonts::label(cfg, cfg.label_size * cfg.font_scale, false);
+        let light = crate::perf::light();
+        let shown: Vec<String> = self.items.iter().map(|it| fit(p, &it.1, &font, it.3)).collect();
+        if !light {
+            for (it, s) in self.items.iter().zip(&shown) {
+                if it.4 {
+                    p.text(it.0 + vec2(0.0, 0.8), Align2::CENTER_TOP, s, font.clone(), Color32::from_black_alpha((90.0 * it.5) as u8));
+                }
+            }
+        }
+        for (it, s) in self.items.iter().zip(shown) {
+            p.text(it.0, Align2::CENTER_TOP, s, font.clone(), it.2.gamma_multiply(it.5));
+        }
+        self.items.clear();
+    }
+}
+
 pub fn label(p: &Painter, center_top: Pos2, text: &str, cfg: &Config, color: Color32, max_w: f32, shadow: bool, alpha: f32) {
     let font = fonts::label(cfg, cfg.label_size * cfg.font_scale, false);
     let s = fit(p, text, &font, max_w);
-    if shadow {
+    if shadow && !crate::perf::light() {
         p.text(center_top + vec2(0.0, 0.8), Align2::CENTER_TOP, &s, font.clone(), Color32::from_black_alpha((90.0 * alpha) as u8));
     }
     p.text(center_top, Align2::CENTER_TOP, s, font, color.gamma_multiply(alpha));

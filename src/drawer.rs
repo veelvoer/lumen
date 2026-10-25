@@ -19,7 +19,7 @@ pub fn results(l: &Lumen, q: &str) -> Vec<Row> {
     let q = q.trim().to_lowercase();
     let mut starts: Vec<&App> = vec![];
     let mut contains: Vec<&App> = vec![];
-    for a in &l.apps {
+    for a in l.apps.iter() {
         if l.cfg.hidden.contains(&a.pkg) && q.is_empty() {
             continue;
         }
@@ -212,14 +212,14 @@ impl Lumen {
             if cfg.suggestions && !searching {
                 let sug: Vec<String> = self.suggested(cfg.drawer_cols.min(5)).into_iter().map(|a| a.pkg.clone()).collect();
                 if !sug.is_empty() {
-                    let h = cfg.icon_size + 26.0;
+                    let h = cfg.eff() + 26.0;
                     let box_r = Rect::from_min_size(pos2(left + 4.0, list_top), vec2(width - 8.0, h));
                     ui.painter().rect_filled(box_r, cr(28.0), pal.card);
                     let n = cfg.drawer_cols.min(5);
                     let cw = box_r.width() / n as f32;
                     for (i, pkg) in sug.iter().enumerate() {
                         let cell = Rect::from_min_size(box_r.min + vec2(i as f32 * cw, 0.0), vec2(cw, h));
-                        let ir = Rect::from_center_size(cell.center(), vec2(cfg.icon_size, cfg.icon_size));
+                        let ir = Rect::from_center_size(cell.center(), vec2(cfg.eff(), cfg.eff()));
                         if let Some(&ai) = self.by_pkg.get(pkg) {
                             let app = self.apps[ai].clone();
                             let resp = ui.interact(cell, Id::new(("sug", pkg)), Sense::click());
@@ -245,7 +245,7 @@ impl Lumen {
                 rows.len() as f32 * 64.0 + 20.0
             } else {
                 match cfg.drawer {
-                    DrawerStyle::Grid => visible.len().div_ceil(cfg.drawer_cols.max(3)) as f32 * (cfg.icon_size + 40.0 * cfg.font_scale + 10.0) + 24.0,
+                    DrawerStyle::Grid => visible.len().div_ceil(cfg.drawer_cols.max(3)) as f32 * (cfg.eff() + 40.0 * cfg.font_scale + 10.0) + 24.0,
                     DrawerStyle::List => visible.len() as f32 * 62.0 + 24.0,
                 }
             };
@@ -314,30 +314,32 @@ impl Lumen {
                         DrawerStyle::Grid => {
                             let cols = cfg.drawer_cols.max(3);
                             let cw = w / cols as f32;
-                            let ch = cfg.icon_size + 40.0 * cfg.font_scale + 10.0;
+                            let ch = cfg.eff() + 40.0 * cfg.font_scale + 10.0;
                             let nrows = visible.len().div_ceil(cols);
                             ui.set_height(nrows as f32 * ch + 24.0);
                             let first = ((viewport.top() / ch).floor() as usize).saturating_sub(1);
                             let last = (((viewport.bottom() / ch).ceil() as usize) + 1).min(nrows);
+                            let mut labels = widgets::Labels::default();
+                            let p = ui.painter().clone();
                             for row in first..last {
                                 for c in 0..cols {
                                     let Some(&ai) = visible.get(row * cols + c) else { break };
                                     let cell = Rect::from_min_size(origin + vec2(c as f32 * cw, row as f32 * ch), vec2(cw, ch));
                                     let app = self.apps[ai].clone();
                                     let resp = ui.interact(cell, Id::new(("d", &app.pkg)), Sense::click());
-                                    let p = ui.painter_at(cell);
                                     let down = resp.is_pointer_button_down_on();
-                                    let ir = Rect::from_center_size(pos2(cell.center().x, cell.top() + 8.0 + cfg.icon_size / 2.0), vec2(cfg.icon_size, cfg.icon_size));
+                                    let ir = Rect::from_center_size(pos2(cell.center().x, cell.top() + 8.0 + cfg.eff() / 2.0), vec2(cfg.eff(), cfg.eff()));
                                     widgets::app_icon(&p, ir, &app, self.icons.as_mut().unwrap(), &cfg, &pal, if down { 0.92 } else { 1.0 }, 0.0, 1.0);
                                     if let Some(n) = self.badges.get(&app.pkg) {
                                         widgets::badge(&p, ir, *n, &cfg, &pal);
                                     }
                                     if cfg.labels {
-                                        widgets::label(&p, pos2(cell.center().x, ir.bottom() + 6.0), cfg.label(&app), &cfg, pal.text, cw - 6.0, false, 1.0);
+                                        labels.push(pos2(cell.center().x, ir.bottom() + 6.0), cfg.label(&app), pal.text, cw - 6.0, false, 1.0);
                                     }
                                     self.drawer_touch(ctx, &resp, &app.pkg, ir, &mut launch, &mut grab, click_ok, idle, time);
                                 }
                             }
+                            labels.flush(&p, &cfg);
                         }
                         DrawerStyle::List => {
                             let rh = 62.0;
@@ -385,7 +387,7 @@ impl Lumen {
                     if let Some(at) = at {
                         let off = match cfg.drawer {
                             DrawerStyle::List => at as f32 * 62.0,
-                            DrawerStyle::Grid => (at / cfg.drawer_cols.max(3)) as f32 * (cfg.icon_size + 40.0 * cfg.font_scale + 10.0),
+                            DrawerStyle::Grid => (at / cfg.drawer_cols.max(3)) as f32 * (cfg.eff() + 40.0 * cfg.font_scale + 10.0),
                         };
                         self.drawer_scroll_to = Some(off);
                         ui.ctx().request_repaint();

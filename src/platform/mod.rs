@@ -90,6 +90,8 @@ pub struct App {
     pub label: String,
     pub key: String, // lowercase label, for sorting and search
     pub category: Category,
+    /// when the app was last installed or updated: icons are cached until it changes
+    pub stamp: i64,
 }
 
 pub struct RawIcon {
@@ -104,6 +106,17 @@ pub struct Insets {
     pub top: f32,
     pub right: f32,
     pub bottom: f32,
+}
+
+/// What the phone is, for choosing how much to draw and for bug reports.
+#[derive(Clone, Debug, Default)]
+pub struct DeviceInfo {
+    pub model: String,
+    pub manufacturer: String,
+    pub sdk: i32,
+    pub ram_mb: i64,
+    pub low_ram: bool,
+    pub refresh_hz: f32,
 }
 
 /// A widget another app offers.

@@ -54,7 +54,7 @@ impl Lumen {
         let k = ctx.pixels_per_point();
         let (il, it, ir, ib) = (self.insets.left / k, self.insets.top / k, self.insets.right / k, self.insets.bottom / k);
         let c = &self.cfg;
-        let icon = c.icon_size;
+        let icon = c.eff();
         let bottom = screen.bottom() - ib.max(14.0) - c.margin_bottom;
         let dock_label = if c.dock_labels { 16.0 * c.font_scale * c.label_size / 12.0 + 4.0 } else { 0.0 };
         let dock_h = match c.dock {
@@ -95,7 +95,7 @@ impl Lumen {
 
     /// The square the icon is drawn in, for a one-cell item.
     pub fn icon_rect(&self, cell: Rect) -> Rect {
-        let icon = self.cfg.icon_size;
+        let icon = self.cfg.eff();
         let label_h = if self.cfg.labels { 16.0 * self.cfg.font_scale * self.cfg.label_size / 12.0 } else { 0.0 };
         let total = icon + if self.cfg.labels { 6.0 + label_h } else { 0.0 };
         let top = cell.top() + ((cell.height() - total) / 2.0).max(2.0);
@@ -134,17 +134,33 @@ impl Lumen {
 
     pub fn home(&mut self, root: &mut egui::Ui, ctx: &Context) {
         let screen = ctx.content_rect();
-        let geo = self.geo(ctx, screen);
+        let mut geo = self.geo(ctx, screen);
+        // icons shrink to fit when the screen or the grid is small
+        let label_h = if self.cfg.labels { 6.0 + 16.0 * self.cfg.font_scale * self.cfg.label_size / 12.0 } else { 0.0 };
+        let drawer_w = (screen.width() - 24.0) / self.cfg.drawer_cols.max(3) as f32;
+        let fit = self.cfg.icon_size.min(geo.cell.y - label_h - 10.0).min(geo.cell.x - 10.0).min(drawer_w - 10.0).max(28.0);
+        if (self.cfg.eff() - fit).abs() > 0.5 {
+            self.cfg.icon_eff = fit;
+            geo = self.geo(ctx, screen);
+        }
         let dt = ctx.input(|i| i.stable_dt).clamp(0.001, 0.05);
-        self.step_springs(ctx, dt);
+        {
+            let _s = crate::perf::span(crate::perf::Sec::Springs);
+            self.step_springs(ctx, dt);
+        }
         // the root ui must be claimed, everything is painted in layers
         egui::CentralPanel::default().frame(Frame::NONE).show(root, |_| {});
         let covered = self.drawer >= 0.995 && self.cfg.drawer_opacity >= 0.99 && self.screen == Screen::Home;
         if !covered {
+            let _s = crate::perf::span(crate::perf::Sec::Paint);
             self.paint_home(ctx, &geo, dt);
         }
         if self.screen == Screen::Home {
-            self.touch(ctx, &geo);
+            {
+                let _s = crate::perf::span(crate::perf::Sec::Touch);
+                self.touch(ctx, &geo);
+            }
+            let _s = crate::perf::span(crate::perf::Sec::Overlays);
             if self.drawer > 0.001 {
                 self.drawer_ui(ctx, screen);
             }
@@ -165,7 +181,7 @@ impl Lumen {
 
         if self.cfg.page_dots || self.has_live_widget() {
             let s = self.clock.sec as u64;
-            let wait = if self.has_analog() { 1 } else { 61u64.saturating_sub(s).max(1) };
+            let wait = if self.has_analog() && !self.light { 1 } else { 61u64.saturating_sub(s).max(1) };
             ctx.request_repaint_after(std::time::Duration::from_secs(wait));
         }
     }
@@ -287,7 +303,7 @@ impl Lumen {
         let mut moving = false;
         let find = |pkg: &str| by_pkg.get(pkg).map(|&i| &apps[i]);
         let icon_rect = |cell: Rect| {
-            let icon = cfg.icon_size;
+            let icon = cfg.eff();
             let label_h = if cfg.labels { 16.0 * cfg.font_scale * cfg.label_size / 12.0 } else { 0.0 };
             let total = icon + if cfg.labels { 6.0 + label_h } else { 0.0 };
             let top = cell.top() + ((cell.height() - total) / 2.0).max(2.0);
@@ -295,19 +311,22 @@ impl Lumen {
         };
         // 1. the wallpaper dim
         layer(ctx, "wall", 0, screen, egui::emath::TSTransform::IDENTITY, 1.0, |p| {
-            p.rect_filled(screen, 0, pal.scrim);
+            if pal.scrim.a() > 0 {
+                p.rect_filled(screen, 0, pal.scrim);
+            }
         });
 
         // 2. pages, each in its own transformed layer so the effect moves everything on it, text too
         for pi in 0..cfg.pages.len().max(1) {
             let d = pi as f32 - page;
-            let (tx, s, a) = page_effect(cfg.page_effect, d, w);
+            let (tx, s, a) = page_effect(if crate::perf::light() { PageEffect::Slide } else { cfg.page_effect }, d, w);
             let show = d.abs() < 1.0 && a > 0.003;
             layer(ctx, "page", pi, screen, tf(tx, s), if show { a * base_alpha } else { 0.0 }, |p| {
                 if !show {
                     return;
                 }
                 let Some(pg) = cfg.pages.get(pi) else { return };
+                let mut labels = widgets::Labels::default();
                 for pl in &pg.items {
                     let key = pl.item.key();
                     let (sw, sh) = (pl.item.span(cfg.cols).0.min(cfg.cols), pl.item.span(cfg.cols).1.min(cfg.rows));
@@ -317,11 +336,12 @@ impl Lumen {
                     let cell = Rect::from_min_size(sp.pos(), target.size());
                     let sc = scale_sp.get(&key).map(|s| s.x).unwrap_or(1.0);
                     let jig = if edit { jiggle(t_now, &key) } else { 0.0 };
-                    paint_item(p, &pl.item, cell, &icon_rect, &cfg, &pal, &mut icons, &find, &badges, &live, sc, jig, 1.0, true, sc > 1.05);
+                    paint_item(p, &pl.item, cell, &icon_rect, &cfg, &pal, &mut icons, &find, &badges, &live, sc, jig, 1.0, true, sc > 1.05, &mut labels);
                     if edit && dragging_key.as_deref() != Some(key.as_str()) {
                         paint_remove_badge(p, &pl.item, cell, &icon_rect, &cfg, &pal);
                     }
                 }
+                labels.flush(p, &cfg);
             });
         }
 
@@ -329,7 +349,7 @@ impl Lumen {
         if let Some((groups, (search_r, cards_l, _))) = &lib {
             let pi = cfg.pages.len();
             let d = pi as f32 - page;
-            let (tx, sc, a) = page_effect(cfg.page_effect, d, w);
+            let (tx, sc, a) = page_effect(if crate::perf::light() { PageEffect::Slide } else { cfg.page_effect }, d, w);
             let show = d.abs() < 1.0 && a > 0.003;
             layer(ctx, "page", pi, screen, tf(tx, sc), if show { a * base_alpha } else { 0.0 }, |p| {
                 if show {
@@ -350,7 +370,7 @@ impl Lumen {
         mut icons: crate::icons::Icons,
         mut item_sp: std::collections::HashMap<String, anim::Spring2>,
         scale_sp: std::collections::HashMap<String, anim::Spring>,
-        apps: Vec<platform::App>,
+        apps: std::rc::Rc<Vec<platform::App>>,
         by_pkg: std::collections::HashMap<String, usize>,
         badges: std::collections::HashMap<String, u32>,
         cfg: &crate::config::Config,
@@ -387,6 +407,7 @@ impl Lumen {
                 }
             }
             let n = cfg.dock_items.len();
+            let mut labels = widgets::Labels::default();
             for (i, it) in cfg.dock_items.iter().enumerate() {
                 let slot = geo.dock_slot(i, n);
                 let key = it.key();
@@ -395,11 +416,12 @@ impl Lumen {
                 let cell = Rect::from_min_size(sp.pos(), slot.size());
                 let sc = scale_sp.get(&key).map(|s| s.x).unwrap_or(1.0);
                 let jig = if edit { jiggle(t_now, &key) } else { 0.0 };
-                paint_item(p, it, cell, &dock_icon, cfg, pal, &mut icons, &find, &badges, live, sc, jig, 1.0, cfg.dock_labels, sc > 1.05);
+                paint_item(p, it, cell, &dock_icon, cfg, pal, &mut icons, &find, &badges, live, sc, jig, 1.0, cfg.dock_labels, sc > 1.05, &mut labels);
                 if edit {
                     paint_remove_badge(p, it, cell, &dock_icon, cfg, pal);
                 }
             }
+            labels.flush(p, cfg);
         });
 
         // 4. search pill, page dots, edit chrome
@@ -528,7 +550,7 @@ impl Lumen {
     pub fn popup_geo(&self, geo: &Geo, n: usize) -> (Rect, Rect, Vec<Rect>) {
         let cols = self.cfg.folder_cols.clamp(2, 5);
         let rows = n.div_ceil(cols).clamp(1, 5);
-        let icon = self.cfg.icon_size;
+        let icon = self.cfg.eff();
         let cw = (icon + 34.0).max(86.0);
         let ch = icon + 36.0;
         let panel_w = cols as f32 * cw + 28.0;
@@ -577,7 +599,7 @@ impl Lumen {
             p.text(title.center_top() + vec2(0.0, 12.0), Align2::CENTER_TOP, &name, fonts::body(&cfg, 20.0, true), tcol);
             for (pkg, cell) in pkgs.iter().zip(cells.iter()) {
                 let Some(&ai) = self.by_pkg.get(pkg) else { continue };
-                let ir = Rect::from_center_size(pos2(cell.center().x, cell.top() + 12.0 + cfg.icon_size / 2.0), vec2(cfg.icon_size, cfg.icon_size));
+                let ir = Rect::from_center_size(pos2(cell.center().x, cell.top() + 12.0 + cfg.eff() / 2.0), vec2(cfg.eff(), cfg.eff()));
                 widgets::app_icon(p, ir, &self.apps[ai], &mut icons, &cfg, &pal, 1.0, 0.0, 1.0);
                 if let Some(c) = self.badges.get(pkg) {
                     widgets::badge(p, ir, *c, &cfg, &pal);
@@ -616,7 +638,7 @@ impl Lumen {
         let (sw, sh) = d.item.span(cfg.cols);
         let size = match &d.item {
             Item::Widget { .. } => vec2(sw.min(cfg.cols) as f32 * geo.cell.x, sh.min(cfg.rows) as f32 * geo.cell.y),
-            _ => vec2(cfg.icon_size, cfg.icon_size),
+            _ => vec2(cfg.eff(), cfg.eff()),
         };
         let whole = Rect::from_center_size(center, size * 1.1);
         let font = fonts::body(&cfg, 14.5, true);
@@ -625,7 +647,7 @@ impl Lumen {
                 if merging {
                     p.rect_filled(r, cr(widgets::plate_radius(&cfg, r.width())), Color32::from_white_alpha(70));
                 } else {
-                    p.rect_stroke(r, cr(widgets::plate_radius(&cfg, cfg.icon_size)), Stroke::new(1.5, pal.home_text.gamma_multiply(0.45)), StrokeKind::Inside);
+                    p.rect_stroke(r, cr(widgets::plate_radius(&cfg, cfg.eff())), Stroke::new(1.5, pal.home_text.gamma_multiply(0.45)), StrokeKind::Inside);
                 }
             }
             for z in &zones {
@@ -640,8 +662,10 @@ impl Lumen {
             }
             widgets::shadow(p, whole, widgets::plate_radius(&cfg, whole.width()), 90);
             let find = |pkg: &str| self.by_pkg.get(pkg).map(|&i| &self.apps[i]);
-            let id = |c: Rect| Rect::from_center_size(c.center(), vec2(cfg.icon_size * 1.1, cfg.icon_size * 1.1));
-            paint_item(p, &d.item, whole, &id, &cfg, &pal, &mut icons, &find, &self.badges, &live, 1.0, 0.0, 1.0, false, false);
+            let id = |c: Rect| Rect::from_center_size(c.center(), vec2(cfg.eff() * 1.1, cfg.eff() * 1.1));
+            let mut labels = widgets::Labels::default();
+            paint_item(p, &d.item, whole, &id, &cfg, &pal, &mut icons, &find, &self.badges, &live, 1.0, 0.0, 1.0, false, false, &mut labels);
+            labels.flush(p, &cfg);
         });
         self.icons = Some(icons);
         ctx.request_repaint();
@@ -987,13 +1011,13 @@ impl Lumen {
                 let (_, _, cells) = self.popup_geo(geo, self.popup_apps().map(|x| x.1.len()).unwrap_or(0));
                 let idx = self.popup_apps().and_then(|x| x.1.iter().position(|p| p == pkg)).unwrap_or(0);
                 let rect = cells.get(idx).copied().unwrap_or(Rect::from_center_size(start, vec2(60.0, 60.0)));
-                let ir = Rect::from_center_size(pos2(rect.center().x, rect.top() + 12.0 + self.cfg.icon_size / 2.0), vec2(self.cfg.icon_size, self.cfg.icon_size));
+                let ir = Rect::from_center_size(pos2(rect.center().x, rect.top() + 12.0 + self.cfg.eff() / 2.0), vec2(self.cfg.eff(), self.cfg.eff()));
                 let from = if self.open_folder.is_some() { Source::Folder(*id) } else { Source::Drawer };
                 self.menu = Some(Menu { target: Target::App { pkg: pkg.clone(), on_home: false }, anchor: ir });
                 self.touch = Touch::Lifted { start, item: Item::App(pkg.clone()), from, rect: ir };
             }
             Hit::LibraryApp(pkg) => {
-                let r = Rect::from_center_size(start, vec2(self.cfg.icon_size, self.cfg.icon_size));
+                let r = Rect::from_center_size(start, vec2(self.cfg.eff(), self.cfg.eff()));
                 self.menu = Some(Menu { target: Target::App { pkg: pkg.clone(), on_home: false }, anchor: r });
                 self.touch = Touch::Lifted { start, item: Item::App(pkg.clone()), from: Source::Drawer, rect: r };
             }
@@ -1342,6 +1366,7 @@ fn paint_item<'a>(
     alpha: f32,
     labels_ok: bool,
     lifted: bool,
+    labels: &mut widgets::Labels,
 ) {
     match item {
         Item::App(pkg) => {
@@ -1355,7 +1380,7 @@ fn paint_item<'a>(
                 widgets::badge(p, Rect::from_center_size(ir.center(), ir.size() * scale), *c, cfg, pal);
             }
             if cfg.labels && labels_ok {
-                widgets::label(p, pos2(cell.center().x, ir.bottom() + 6.0 + (scale - 1.0) * ir.height() / 2.0), cfg.names.get(pkg).map(|s| s.as_str()).unwrap_or(&app.label), cfg, pal.home_text, cell.width() - 4.0, cfg.label_shadow, alpha);
+                labels.push(pos2(cell.center().x, ir.bottom() + 6.0 + (scale - 1.0) * ir.height() / 2.0), cfg.names.get(pkg).map(|s| s.as_str()).unwrap_or(&app.label), pal.home_text, cell.width() - 4.0, cfg.label_shadow, alpha);
             }
         }
         Item::Folder { name, apps, .. } => {
@@ -1363,7 +1388,7 @@ fn paint_item<'a>(
             let list: Vec<&platform::App> = apps.iter().filter_map(|a| find(a)).collect();
             widgets::folder_icon(p, ir, &list, icons, cfg, pal, scale, rot);
             if cfg.labels && labels_ok {
-                widgets::label(p, pos2(cell.center().x, ir.bottom() + 6.0), name, cfg, pal.home_text, cell.width() - 4.0, cfg.label_shadow, alpha);
+                labels.push(pos2(cell.center().x, ir.bottom() + 6.0), name, pal.home_text, cell.width() - 4.0, cfg.label_shadow, alpha);
             }
         }
         Item::Widget { kind, .. } => {

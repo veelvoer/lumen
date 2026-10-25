@@ -25,6 +25,7 @@ pub struct Snapshot {
     pub badges: HashMap<String, u32>,
     pub dark: bool,
     pub dark_text: bool,
+    pub refresh_hz: f32,
     pub home_pressed: bool,
     pub settings_requested: bool,
 }
@@ -37,7 +38,7 @@ enum Cmd {
     Bars { hide_status: bool, hide_nav: bool },
     Rotate(bool),
     LightBars(bool),
-    HighRefresh,
+    HighRefresh(bool),
     Poke,
 }
 
@@ -62,6 +63,7 @@ fn poll(s: &mut Snapshot, slow: bool) {
         s.badges = platform::badges();
         s.dark = platform::is_dark();
         s.dark_text = platform::wallpaper_dark_text();
+        s.refresh_hz = platform::refresh_rate();
     }
 }
 
@@ -74,7 +76,6 @@ impl Bridge {
         }
         let (tx, rx) = channel::<Cmd>();
         let _ = BG.set(Mutex::new(tx.clone()));
-        let _ = tx.send(Cmd::HighRefresh);
         let (s2, ctx2) = (snap.clone(), ctx.clone());
         std::thread::spawn(move || {
             let mut last_slow = Instant::now();
@@ -94,7 +95,7 @@ impl Bridge {
                         Cmd::Bars { hide_status, hide_nav } => platform::set_system_bars(hide_status, hide_nav),
                         Cmd::Rotate(on) => platform::set_rotation(on),
                         Cmd::LightBars(l) => platform::set_light_bars(l),
-                        Cmd::HighRefresh => platform::request_high_refresh(),
+                        Cmd::HighRefresh(on) => platform::request_high_refresh(on),
                         Cmd::Poke => {}
                     },
                     Err(RecvTimeoutError::Timeout) => {}
@@ -158,8 +159,8 @@ impl Bridge {
     }
 
     /// Ask for the display's fastest refresh rate while Lumen is showing.
-    pub fn high_refresh(&self) {
-        let _ = self.tx.send(Cmd::HighRefresh);
+    pub fn high_refresh(&self, on: bool) {
+        let _ = self.tx.send(Cmd::HighRefresh(on));
     }
 
     pub fn light_bars(&self, light: bool) {

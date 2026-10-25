@@ -8,6 +8,10 @@ use lumen::{Config, Lumen, Preset};
 const OUT: &str = "/tmp/lumen-shots";
 
 fn make(preset: Preset, setup: impl Fn(&mut Config)) -> Harness<'static, Option<Lumen>> {
+    make_sized(preset, setup, vec2(412.0, 915.0), 2.625)
+}
+
+fn make_sized(preset: Preset, setup: impl Fn(&mut Config), size: egui::Vec2, ppp: f32) -> Harness<'static, Option<Lumen>> {
     let dir = format!("/tmp/lumen-test-{:?}-{}", preset, std::process::id());
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -16,8 +20,8 @@ fn make(preset: Preset, setup: impl Fn(&mut Config)) -> Harness<'static, Option<
     setup(&mut cfg);
     cfg.save(&dir);
     let mut h = Harness::builder()
-        .with_size(vec2(412.0, 915.0))
-        .with_pixels_per_point(2.625)
+        .with_size(size)
+        .with_pixels_per_point(ppp)
         .with_context_setup(|ctx| lumen::install_fonts(ctx))
         .wgpu()
         .build_ui_state(
@@ -266,4 +270,14 @@ fn transitions() {
     }
     h.step();
     shot(&mut h, "ios-page-moving");
+}
+
+#[test]
+fn small_and_odd_screens() {
+    for (w, h, ppp, name) in [(360.0, 760.0, 2.0, "360x760"), (320.0, 570.0, 1.5, "320x570"), (411.0, 914.0, 1.75, "g22-like"), (800.0, 1280.0, 1.5, "tablet-ish")] {
+        for (p, pn) in [(Preset::Pixel, "pixel"), (Preset::Ios, "ios")] {
+            let mut h2 = make_sized(p, |_| {}, vec2(w, h), ppp);
+            shot(&mut h2, &format!("size-{name}-{pn}"));
+        }
+    }
 }

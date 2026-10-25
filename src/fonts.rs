@@ -12,7 +12,32 @@ fn add(defs: &mut FontDefinitions, name: &str, data: &'static [u8]) {
     defs.font_data.insert(name.into(), Arc::new(FontData::from_static(data)));
 }
 
-pub fn install(ctx: &Context) {
+pub const CJK: u8 = 1;
+pub const ARABIC: u8 = 2;
+pub const DEVANAGARI: u8 = 4;
+pub const THAI: u8 = 8;
+pub const HEBREW: u8 = 16;
+
+/// Which scripts beyond the bundled Latin, Greek and Cyrillic a text needs.
+pub fn scripts_in(text: &str) -> u8 {
+    let mut m = 0;
+    for c in text.chars() {
+        let u = c as u32;
+        m |= match u {
+            0x2E80..=0x9FFF | 0xAC00..=0xD7AF | 0xF900..=0xFAFF | 0xFF00..=0xFFEF | 0x3040..=0x30FF => CJK,
+            0x0600..=0x06FF | 0x0750..=0x077F | 0xFB50..=0xFDFF | 0xFE70..=0xFEFF => ARABIC,
+            0x0900..=0x097F => DEVANAGARI,
+            0x0E00..=0x0E7F => THAI,
+            0x0590..=0x05FF => HEBREW,
+            _ => 0,
+        };
+    }
+    m
+}
+
+/// Bundled fonts always; the phone's big fonts for other scripts only when something on screen needs them
+/// (a Chinese font is 16 MB: reading it on every start would slow every phone down for nobody).
+pub fn install(ctx: &Context, scripts: u8) {
     let mut defs = FontDefinitions::default();
     add(&mut defs, "gs", include_bytes!("../assets/fonts/GoogleSans-Regular.ttf"));
     add(&mut defs, "gs-m", include_bytes!("../assets/fonts/GoogleSans-Medium.ttf"));
@@ -23,23 +48,20 @@ pub fn install(ctx: &Context) {
     add(&mut defs, "ph", include_bytes!("../assets/Phosphor.ttf"));
     add(&mut defs, "ph-fill", include_bytes!("../assets/Phosphor-Fill.ttf"));
 
-    // the phone's own fonts cover scripts the bundled Latin fonts do not
+    let wanted: [(u8, &[&str]); 5] = [
+        (CJK, &["/system/fonts/NotoSansCJK-Regular.ttc", "/system/fonts/NotoSansSC-Regular.otf", "/system/fonts/NotoSerifCJK-Regular.ttc"]),
+        (ARABIC, &["/system/fonts/NotoSansArabic-Regular.ttf", "/system/fonts/NotoNaskhArabic-Regular.ttf"]),
+        (DEVANAGARI, &["/system/fonts/NotoSansDevanagari-Regular.ttf"]),
+        (THAI, &["/system/fonts/NotoSansThai-Regular.ttf"]),
+        (HEBREW, &["/system/fonts/NotoSansHebrew-Regular.ttf"]),
+    ];
     let mut system: Vec<String> = vec![];
-    for (i, p) in [
-        "/system/fonts/Roboto-Regular.ttf",
-        "/system/fonts/RobotoStatic-Regular.ttf",
-        "/system/fonts/NotoSansCJK-Regular.ttc",
-        "/system/fonts/NotoSansSC-Regular.otf",
-        "/system/fonts/NotoSansArabic-Regular.ttf",
-        "/system/fonts/NotoSansDevanagari-Regular.ttf",
-        "/system/fonts/NotoSansThai-Regular.ttf",
-        "/system/fonts/NotoSansHebrew-Regular.ttf",
-    ]
-    .iter()
-    .enumerate()
-    {
-        if let Ok(data) = std::fs::read(p) {
-            let name = format!("sys{i}");
+    for (bit, paths) in wanted {
+        if scripts & bit == 0 {
+            continue;
+        }
+        if let Some((i, data)) = paths.iter().enumerate().find_map(|(i, p)| std::fs::read(p).ok().map(|d| (i, d))) {
+            let name = format!("sys{bit}-{i}");
             defs.font_data.insert(name.clone(), Arc::new(FontData::from_owned(data)));
             system.push(name);
         }
@@ -58,7 +80,6 @@ pub fn install(ctx: &Context) {
     family(&mut defs, "mono-m", "mono-m");
     defs.families.insert(FontFamily::Name(ICONS.into()), vec!["ph".into()]);
     defs.families.insert(FontFamily::Name(ICONS_FILL.into()), vec!["ph-fill".into()]);
-    // egui's default text also gets the nicer fonts
     let mut prop = vec!["gs".to_string()];
     prop.extend(system.iter().cloned());
     defs.families.insert(FontFamily::Proportional, prop);

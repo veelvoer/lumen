@@ -104,14 +104,44 @@ pub enum Dialog {
     RenameFolder { id: u32, text: String },
 }
 
+/// The config, shared cheaply: copying it for a frame costs a pointer, and changing it copies only if someone still holds an old copy.
+#[derive(Clone)]
+pub struct Cfg(std::rc::Rc<Config>);
+
+impl Cfg {
+    pub fn new(c: Config) -> Cfg {
+        Cfg(std::rc::Rc::new(c))
+    }
+}
+
+impl std::ops::Deref for Cfg {
+    type Target = Config;
+    fn deref(&self) -> &Config {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Cfg {
+    fn deref_mut(&mut self) -> &mut Config {
+        std::rc::Rc::make_mut(&mut self.0)
+    }
+}
+
 pub struct Lumen {
-    pub cfg: Config,
+    pub cfg: Cfg,
     pub dir: String,
     pub pal: Palette,
     pub phone_colors: Option<Dynamic>,
+    pub font_scripts: u8,
+    pub device: crate::platform::DeviceInfo,
+    pub gpu: String,
+    /// light mode is on: fewer effects, so weak phones stay smooth
+    pub light: bool,
+    last_offset_at: f64,
+    last_hr: Option<bool>,
     pub system_dark: bool,
     pub wallpaper_dark_text: bool,
-    pub apps: Vec<App>,
+    pub apps: std::rc::Rc<Vec<App>>,
     pub by_pkg: HashMap<String, usize>,
     apps_rx: Receiver<Vec<App>>,
     pub icons: Option<Icons>,
@@ -176,7 +206,9 @@ pub struct Lumen {
     last_blur: i32,
     last_bars: (bool, bool, bool),
     last_light: Option<bool>,
-    perf: (f32, f32, u32, u32, f64),
+    pub perf: crate::perf::Perf,
+    /// seconds one frame may take (1 / refresh rate)
+    pub frame_budget: f32,
     style_key: Option<String>,
 }
 
@@ -190,11 +222,17 @@ impl Lumen {
         let mut l = Lumen {
             pal,
             phone_colors,
+            font_scripts: 0,
+            device: platform::device_info(),
+            gpu: String::new(),
+            light: false,
+            last_offset_at: 0.0,
+            last_hr: None,
             system_dark,
             wallpaper_dark_text: false,
-            icons: Some(Icons::new(ctx, icons::Style { shape: cfg.shape, radius: cfg.icon_radius, mono: cfg.themed_icons })),
+            icons: Some(Icons::new(ctx, icons::Style { shape: cfg.shape, radius: cfg.icon_radius, mono: cfg.themed_icons, px: icons::px_for(cfg.icon_size.max(cfg.dock_icon_size), ctx.pixels_per_point()) }, dir.clone())),
             dir,
-            apps: vec![],
+            apps: Default::default(),
             by_pkg: HashMap::new(),
             apps_rx: spawn_app_scan(ctx),
             upd: Updater::default(),
@@ -218,7 +256,7 @@ impl Lumen {
             menu_t: Spring::at(0.0),
             screen_t: Spring::at(0.0),
             depth: Spring::at(0.0),
-            feel: anim::feel(&cfg),
+            feel: anim::feel(&cfg, false),
             bridge: Bridge::new(ctx),
             press_key: None,
             vel_smooth: egui::Vec2::ZERO,
@@ -253,12 +291,36 @@ impl Lumen {
             last_blur: -1,
             last_bars: (false, false, false),
             last_light: None,
-            perf: (0.0, 0.0, 0, 0, 0.0),
+            perf: Default::default(),
+            frame_budget: 1.0 / 60.0,
             style_key: None,
-            cfg,
+            cfg: Cfg::new(cfg),
         };
         l.restyle(ctx);
         l
+    }
+
+    /// Decides whether light mode is on, from the setting, the phone, and what Auto learned.
+    pub fn update_light(&mut self) {
+        let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(8);
+        let weak = crate::perf::weak_device(&self.device, &self.gpu, cores);
+        self.light = match self.cfg.perf_mode {
+            crate::config::PerfMode::Full => false,
+            crate::config::PerfMode::Light => true,
+            crate::config::PerfMode::Auto => weak || self.cfg.light_learned,
+        };
+        crate::perf::set_light(self.light);
+        if self.last_hr != Some(!self.light) {
+            self.last_hr = Some(!self.light);
+            self.bridge.high_refresh(!self.light);
+        }
+    }
+
+    /// The name of the graphics chip, known once the window exists.
+    pub fn set_gpu(&mut self, ctx: &Context, gpu: &str) {
+        self.gpu = gpu.to_string();
+        self.update_light();
+        self.restyle(ctx);
     }
 
     pub fn app(&self, pkg: &str) -> Option<&App> {
@@ -284,12 +346,13 @@ impl Lumen {
         st.spacing.slider_width = 150.0;
         ctx.set_global_style(st);
         if !ctx.input(|i| i.pointer.any_down()) {
-            let style = icons::Style { shape: self.cfg.shape, radius: self.cfg.icon_radius, mono: self.cfg.themed_icons };
+            let style = icons::Style { shape: self.cfg.shape, radius: self.cfg.icon_radius, mono: self.cfg.themed_icons, px: { let px = icons::px_for(self.cfg.icon_size.max(self.cfg.dock_icon_size), ctx.pixels_per_point()); if self.light { px.min(112) } else { px } } };
             if let Some(ic) = self.icons.as_mut() {
                 ic.restyle(style);
             }
         }
-        self.feel = anim::feel(&self.cfg);
+        self.update_light();
+        self.feel = anim::feel(&self.cfg, self.light);
     }
 
     // ───────────────────────────── per-frame upkeep ─────────────────────────────
@@ -298,12 +361,18 @@ impl Lumen {
         if let Some(ic) = self.icons.as_mut() {
             ic.pump();
         }
+        {
+            let idle = matches!(self.touch, Touch::Idle) && self.drawer == 0.0 && !self.drawer_open;
+            if let Some(ic) = self.icons.as_mut() {
+                ic.prefetch_step(idle);
+            }
+        }
         self.aw.borrow_mut().pump();
         self.handle_widget_events(ctx);
         if let Ok(mut list) = self.apps_rx.try_recv() {
             list.dedup_by(|a, b| a.pkg == b.pkg);
             self.by_pkg = list.iter().enumerate().map(|(i, a)| (a.pkg.clone(), i)).collect();
-            self.apps = list;
+            self.apps = std::rc::Rc::new(list);
             if !self.cfg.seeded {
                 self.seed();
             } else {
@@ -315,12 +384,16 @@ impl Lumen {
                     }
                 }
             }
+            // load a font for a script only when an app name needs it
+            let need = self.apps.iter().fold(0u8, |m, x| m | crate::fonts::scripts_in(&x.label));
+            if need & !self.font_scripts != 0 {
+                self.font_scripts |= need;
+                crate::fonts::install(ctx, self.font_scripts);
+            }
             self.cfg.known = self.apps.iter().map(|x| x.pkg.clone()).collect();
             // load every icon in the background now, so the drawer never waits for one
             if let Some(ic) = self.icons.as_mut() {
-                for a in &self.apps {
-                    ic.get(a);
-                }
+                ic.prefetch_all(&self.apps);
             }
             let known: std::collections::HashSet<&str> = self.apps.iter().map(|a| a.pkg.as_str()).collect();
             self.cfg.tidy(&|p| known.contains(p));
@@ -329,6 +402,9 @@ impl Lumen {
         }
         // everything the phone tells us arrives from the background worker; nothing here can stall a frame
         let snap: Snapshot = self.bridge.snapshot();
+        if snap.refresh_hz >= 30.0 {
+            self.frame_budget = 1.0 / snap.refresh_hz.min(144.0);
+        }
         self.insets = snap.insets;
         self.clock = ClockInfo::now(snap.tz_offset_ms, match self.cfg.time_format {
             crate::config::TimeFormat::Phone => snap.h24,
@@ -358,7 +434,7 @@ impl Lumen {
         if focused && !self.was_focused {
             self.apps_rx = spawn_app_scan(ctx);
             self.default_home = platform::is_default_home();
-            self.bridge.high_refresh();
+            self.bridge.high_refresh(!self.light);
         }
         self.was_focused = focused;
 
@@ -378,15 +454,17 @@ impl Lumen {
         if self.cfg.wallpaper_scroll && self.screen == Screen::Home {
             let n = self.page_count().max(2) as f32 - 1.0;
             let off = (self.page / n).clamp(0.0, 1.0);
-            if (off - self.last_offset).abs() > 0.004 {
+            let now = ctx.input(|i| i.time);
+            if (off - self.last_offset).abs() > 0.004 && (!self.light || now - self.last_offset_at > 0.15) {
                 self.last_offset = off;
+                self.last_offset_at = now;
                 self.bridge.wallpaper_offset(off);
             }
         }
         let k = ctx.pixels_per_point();
         let lib_amount = if self.cfg.app_library { (self.page - (self.cfg.pages.len() as f32 - 1.0)).clamp(0.0, 1.0) } else { 0.0 };
         let amount = self.drawer.clamp(0.0, 1.0).max(self.folder_t.clamp(0.0, 1.0) * 0.7).max(lib_amount * 0.8).max(if self.screen == Screen::Settings { self.screen_t.x.clamp(0.0, 1.0) } else { 0.0 });
-        let px = ((amount * self.cfg.blur * 28.0 * k) / 4.0).round() as i32 * 4;
+        let px = if self.light { 0 } else { ((amount * self.cfg.blur * 28.0 * k) / 4.0).round() as i32 * 4 };
         if px != self.last_blur {
             self.last_blur = px;
             self.bridge.blur(px);
@@ -517,7 +595,7 @@ impl Lumen {
         ];
         let mut list: Vec<String> = WELL_KNOWN.iter().filter(|p| self.by_pkg.contains_key(**p) && !dock.contains(&p.to_string())).map(|p| p.to_string()).collect();
         if list.len() < 10 {
-            for a in &self.apps {
+            for a in self.apps.iter() {
                 if list.len() >= 14 {
                     break;
                 }
@@ -661,7 +739,10 @@ impl Lumen {
     pub fn frame(&mut self, root: &mut egui::Ui) {
         let ctx = root.ctx().clone();
         self.log_frame_times(&ctx);
-        self.tick(&ctx);
+        {
+            let _s = crate::perf::span(crate::perf::Sec::Tick);
+            self.tick(&ctx);
+        }
         let dt = ctx.input(|i| i.stable_dt).clamp(0.001, 0.05);
         self.screen_t.target = if self.screen == Screen::Settings { 1.0 } else { 0.0 };
         let mut busy = self.screen_t.step(dt, self.feel.screen);
@@ -673,6 +754,7 @@ impl Lumen {
             self.home(root, &ctx);
         }
         if self.screen == Screen::Settings || self.screen_t.x > 0.002 {
+            let _s = crate::perf::span(crate::perf::Sec::Settings);
             crate::settings::show(self, root);
         }
         self.save_if_dirty();
@@ -683,20 +765,65 @@ impl Lumen {
     /// Writes one line a second to the log when frames were slow, so jank can be found on a real phone.
     fn log_frame_times(&mut self, ctx: &Context) {
         let dt = ctx.input(|i| i.unstable_dt);
-        if dt > 0.0 && dt < 0.2 {
-            self.perf.0 += dt;
-            self.perf.1 = self.perf.1.max(dt);
-            self.perf.2 += 1;
-            if dt > 0.0225 {
-                self.perf.3 += 1;
-            }
-        } else if self.perf.2 >= 4 {
-            // a pause ends a burst of animation: report how it went
-            log::info!("burst: {} frames, avg {:.1}ms, max {:.1}ms, slow {}", self.perf.2, self.perf.0 / self.perf.2 as f32 * 1000.0, self.perf.1 * 1000.0, self.perf.3);
-            self.perf = (0.0, 0.0, 0, 0, 0.0);
-        } else {
-            self.perf = (0.0, 0.0, 0, 0, 0.0);
+        self.perf.frame(dt, self.frame_budget);
+        // the phone cannot keep up: lighten up on our own, and remember it
+        if self.cfg.perf_mode == crate::config::PerfMode::Auto && !self.light && self.perf.slow_run >= 45 {
+            self.cfg.light_learned = true;
+            self.dirty = true;
+            self.update_light();
+            self.restyle(ctx);
+            self.toast(ctx, "Switched to smooth mode so it keeps up");
         }
+    }
+
+    /// After a panic in a frame: drop whatever gesture or popup was in flight so the next frame starts clean.
+    pub fn recover(&mut self) {
+        log::error!("recovered from a panic in a frame");
+        self.touch = Touch::Idle;
+        self.menu = None;
+        self.dialog = None;
+        self.edit = false;
+        self.press_key = None;
+    }
+
+    /// A plain-text report about this phone and this launcher, for bug reports.
+    pub fn diagnostics(&self, ctx: &Context) -> String {
+        let (pages, icons, px) = self.icons.as_ref().map(|i| i.stats()).unwrap_or((0, 0, 0));
+        let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(0);
+        let r = ctx.content_rect();
+        let k = ctx.pixels_per_point();
+        format!(
+            "Lumen {}\nDevice: {} {} (Android API {})\nMemory: {} MB{}, {} cores\nScreen: {:.0}x{:.0} px, density {:.2}, {:.0} Hz\nGraphics: {}\nMode: {:?}, light is {}{}\nFrame time while moving: {:.1} ms (budget {:.1} ms)\nApps: {}, icons loaded {} ({} px, {} atlas pages)\nPreset: {:?}, grid {}x{}, pages {}",
+            self.version,
+            self.device.manufacturer,
+            self.device.model,
+            self.device.sdk,
+            self.device.ram_mb,
+            if self.device.low_ram { " (low-memory device)" } else { "" },
+            cores,
+            r.width() * k,
+            r.height() * k,
+            k,
+            self.device.refresh_hz.max(1.0).max(1.0 / self.frame_budget.max(0.001)),
+            if self.gpu.is_empty() { "unknown" } else { &self.gpu },
+            self.cfg.perf_mode,
+            if self.light { "on" } else { "off" },
+            if self.cfg.light_learned { " (learned from slow frames)" } else { "" },
+            self.perf.recent * 1000.0,
+            self.frame_budget * 1000.0,
+            self.apps.len(),
+            icons,
+            px,
+            pages,
+            self.cfg.preset,
+            self.cfg.cols,
+            self.cfg.rows,
+            self.cfg.pages.len(),
+        )
+    }
+
+    pub fn note_cpu(&mut self, c: f32) {
+        self.perf.cpu(c);
     }
 }
 

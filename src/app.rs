@@ -88,6 +88,7 @@ pub enum Target {
     App { pkg: String, on_home: bool },
     Folder(u32),
     Widget(u32),
+    AppWidget(u32),
     Home,
 }
 
@@ -149,6 +150,7 @@ pub struct Lumen {
     pub menu: Option<Menu>,
     pub dialog: Option<Dialog>,
     pub widget_picker: bool,
+    pub picker_tab: u8,
     pub search_open: bool,
     pub query: String,
     pub focus_search: bool,
@@ -158,6 +160,7 @@ pub struct Lumen {
     pub suppress_click: f64,
     pub drawer_scroll_to: Option<f32>,
     pub scroller: crate::scroll::Scroller,
+    pub aw: std::rc::Rc<std::cell::RefCell<crate::appwidgets::AppWidgets>>,
     pub lib_scroller: crate::scroll::Scroller,
     pub picker_scroller: crate::scroll::Scroller,
     pub search_scroller: crate::scroll::Scroller,
@@ -227,6 +230,7 @@ impl Lumen {
             menu: None,
             dialog: None,
             widget_picker: false,
+            picker_tab: 1,
             search_open: false,
             query: String::new(),
             focus_search: false,
@@ -235,6 +239,7 @@ impl Lumen {
             suppress_click: 0.0,
             drawer_scroll_to: None,
             scroller: Default::default(),
+            aw: std::rc::Rc::new(std::cell::RefCell::new(crate::appwidgets::AppWidgets::new(ctx))),
             lib_scroller: Default::default(),
             picker_scroller: Default::default(),
             search_scroller: Default::default(),
@@ -293,6 +298,8 @@ impl Lumen {
         if let Some(ic) = self.icons.as_mut() {
             ic.pump();
         }
+        self.aw.borrow_mut().pump();
+        self.handle_widget_events(ctx);
         if let Ok(mut list) = self.apps_rx.try_recv() {
             list.dedup_by(|a, b| a.pkg == b.pkg);
             self.by_pkg = list.iter().enumerate().map(|(i, a)| (a.pkg.clone(), i)).collect();
@@ -431,6 +438,36 @@ impl Lumen {
             self.edit = false;
         } else {
             self.page_target = 0.0;
+        }
+    }
+
+    /// A widget from another app finished being added (or failed): put it on the home screen.
+    fn handle_widget_events(&mut self, ctx: &Context) {
+        let events: Vec<crate::appwidgets::Event> = {
+            let aw = self.aw.borrow();
+            let mut g = aw.events.lock().unwrap();
+            std::mem::take(&mut *g)
+        };
+        for e in events {
+            match e {
+                crate::appwidgets::Event::Ready { wid, provider } => {
+                    let (w, h) = provider.cells();
+                    let (w, h) = (w.min(self.cfg.cols), h.min(self.cfg.rows));
+                    let id = self.cfg.new_id();
+                    let item = Item::AppWidget { id, wid, pkg: provider.pkg.clone(), cls: provider.cls.clone(), w, h };
+                    let pi = (self.page.round() as usize).min(self.cfg.pages.len().saturating_sub(1));
+                    if let Some((c, r)) = self.cfg.free_spot(pi, w, h) {
+                        self.cfg.place(pi, c, r, item);
+                    } else {
+                        self.cfg.insert_auto(item);
+                    }
+                    self.dirty = true;
+                    self.widget_picker = false;
+                    self.edit = false;
+                    self.toast(ctx, "Widget added");
+                }
+                crate::appwidgets::Event::Failed(msg) => self.toast(ctx, &msg),
+            }
         }
     }
 

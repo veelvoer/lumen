@@ -4,7 +4,7 @@ use super::PACKAGE;
 use jni::errors::Result as JResult;
 use jni::objects::{GlobalRef, JObject, JString, JValue};
 use jni::{JNIEnv, JavaVM};
-use super::{App, Battery, Category, Dynamic, Haptic, Insets, RawIcon};
+use super::{App, Battery, Category, Dynamic, Haptic, Insets, RawIcon, WidgetProvider};
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
@@ -782,4 +782,113 @@ pub fn request_high_refresh() {
         env.call_static_method(&cls, "highRefresh", "(Landroid/app/Activity;)V", &[JValue::Object(act)])?;
         Ok(())
     });
+}
+
+// ───────────────────────────── widgets from other apps ─────────────────────────────
+
+const WIDGETS: &str = "dev.voer.lumen.Widgets";
+
+fn bitmap_to_icon(env: &mut JNIEnv, bmp: &JObject) -> JResult<RawIcon> {
+    let w = env.call_method(bmp, "getWidth", "()I", &[])?.i()?;
+    let h = env.call_method(bmp, "getHeight", "()I", &[])?.i()?;
+    let n = w * h * 4;
+    let buf = env.call_static_method("java/nio/ByteBuffer", "allocateDirect", "(I)Ljava/nio/ByteBuffer;", &[JValue::Int(n)])?.l()?;
+    env.call_method(bmp, "copyPixelsToBuffer", "(Ljava/nio/Buffer;)V", &[JValue::Object(&buf)])?;
+    let jb = jni::objects::JByteBuffer::from(unsafe { JObject::from_raw(buf.as_raw()) });
+    let ptr = env.get_direct_buffer_address(&jb)?;
+    let rgba = unsafe { std::slice::from_raw_parts(ptr, n as usize) }.to_vec();
+    env.call_method(bmp, "recycle", "()V", &[])?;
+    // widgets are not square: the width goes in `size`, the height follows from the byte count
+    Ok(RawIcon { size: w as usize, rgba, mono: false })
+}
+
+pub fn widget_providers() -> Vec<WidgetProvider> {
+    with(|env, act| {
+        let cls = glue(env, act, WIDGETS)?;
+        let s = env.call_static_method(&cls, "providers", "()Ljava/lang/String;", &[])?.l()?;
+        let text = jstr(env, &s);
+        Ok(text
+            .lines()
+            .filter_map(|l| {
+                let p: Vec<&str> = l.split('|').collect();
+                (p.len() == 6).then(|| WidgetProvider { pkg: p[0].into(), cls: p[1].into(), label: p[2].into(), w: p[3].parse().unwrap_or(110), h: p[4].parse().unwrap_or(110), configure: p[5] == "1" })
+            })
+            .collect())
+    })
+    .unwrap_or_default()
+}
+
+pub fn widget_preview(pkg: &str, cls_name: &str, px: i32) -> Option<RawIcon> {
+    with(|env, act| {
+        let cls = glue(env, act, WIDGETS)?;
+        let (p, c) = (env.new_string(pkg)?, env.new_string(cls_name)?);
+        let b = env.call_static_method(&cls, "preview", "(Ljava/lang/String;Ljava/lang/String;I)Landroid/graphics/Bitmap;", &[JValue::Object(&p), JValue::Object(&c), JValue::Int(px)])?.l()?;
+        if b.is_null() {
+            return Err(jni::errors::Error::NullPtr("preview"));
+        }
+        bitmap_to_icon(env, &b)
+    })
+}
+
+pub fn widget_allocate() -> i32 {
+    with(|env, act| {
+        let cls = glue(env, act, WIDGETS)?;
+        env.call_static_method(&cls, "allocate", "()I", &[])?.i()
+    })
+    .unwrap_or(-1)
+}
+
+pub fn widget_bind(id: i32, pkg: &str, cls_name: &str) -> i32 {
+    with(|env, act| {
+        let cls = glue(env, act, WIDGETS)?;
+        let (p, c) = (env.new_string(pkg)?, env.new_string(cls_name)?);
+        env.call_static_method(&cls, "bind", "(ILjava/lang/String;Ljava/lang/String;)I", &[JValue::Int(id), JValue::Object(&p), JValue::Object(&c)])?.i()
+    })
+    .unwrap_or(-1)
+}
+
+pub fn widget_configure(id: i32) -> i32 {
+    with(|env, act| {
+        let cls = glue(env, act, WIDGETS)?;
+        env.call_static_method(&cls, "configure", "(I)I", &[JValue::Int(id)])?.i()
+    })
+    .unwrap_or(0)
+}
+
+pub fn widget_delete(id: i32) {
+    with(|env, act| {
+        let cls = glue(env, act, WIDGETS)?;
+        env.call_static_method(&cls, "delete", "(I)V", &[JValue::Int(id)])?;
+        Ok(())
+    });
+}
+
+/// The widget drawn at w x h pixels. `RawIcon::size` is the width.
+pub fn widget_render(id: i32, w: i32, h: i32) -> Option<RawIcon> {
+    with(|env, act| {
+        let cls = glue(env, act, WIDGETS)?;
+        let b = env.call_static_method(&cls, "render", "(III)Landroid/graphics/Bitmap;", &[JValue::Int(id), JValue::Int(w), JValue::Int(h)])?.l()?;
+        if b.is_null() {
+            return Err(jni::errors::Error::NullPtr("render"));
+        }
+        bitmap_to_icon(env, &b)
+    })
+}
+
+pub fn widget_touch(id: i32, action: i32, x: f32, y: f32) {
+    with(|env, act| {
+        let cls = glue(env, act, WIDGETS)?;
+        env.call_static_method(&cls, "touch", "(IIFF)V", &[JValue::Int(id), JValue::Int(action), JValue::Float(x), JValue::Float(y)])?;
+        Ok(())
+    });
+}
+
+/// "bind:<id>:ok", "config:<id>:no", or empty.
+pub fn take_widget_result() -> String {
+    with(|env, act| {
+        let cls = glue(env, act, WIDGETS)?;
+        let s = env.call_static_method(&cls, "takeResult", "()Ljava/lang/String;", &[])?.l()?;
+        Ok(jstr(env, &s))
+    })
+    .unwrap_or_default()
 }

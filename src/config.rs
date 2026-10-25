@@ -213,6 +213,8 @@ pub enum Item {
     App(String),
     Folder { id: u32, name: String, apps: Vec<String> },
     Widget { id: u32, kind: WidgetKind },
+    /// a widget that belongs to another app; `wid` is Android's widget id
+    AppWidget { id: u32, wid: i32, pkg: String, cls: String, w: usize, h: usize },
 }
 
 impl Item {
@@ -222,12 +224,14 @@ impl Item {
             Item::App(p) => format!("app:{p}"),
             Item::Folder { id, .. } => format!("folder:{id}"),
             Item::Widget { id, .. } => format!("widget:{id}"),
+            Item::AppWidget { id, .. } => format!("awidget:{id}"),
         }
     }
 
     pub fn span(&self, cols: usize) -> (usize, usize) {
         match self {
             Item::Widget { kind, .. } => kind.span(cols),
+            Item::AppWidget { w, h, .. } => ((*w).clamp(1, cols), (*h).clamp(1, 8)),
             _ => (1, 1),
         }
     }

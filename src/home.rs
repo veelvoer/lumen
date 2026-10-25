@@ -251,7 +251,9 @@ impl Lumen {
         let dragging_key = if let Touch::Drag(d) = &self.touch { Some(d.item.key()) } else { None };
         let edit = self.edit;
         let live_clock = self.clock.clone();
-        let live = cards::Live { clock: &live_clock, battery: self.battery };
+        let aw_rc = self.aw.clone();
+        let aw_guard = aw_rc.borrow();
+        let live = cards::Live { clock: &live_clock, battery: self.battery, aw: Some(&*aw_guard), ppp: ctx.pixels_per_point(), now: ctx.input(|i| i.time) };
         let count = cfg.pages.len() + usize::from(cfg.app_library);
 
         // how far the home screen steps back while something opens over it
@@ -606,7 +608,9 @@ impl Lumen {
         };
         let merging = matches!(d.hover, Hover::Merge(_));
         let live_clock = self.clock.clone();
-        let live = cards::Live { clock: &live_clock, battery: self.battery };
+        let aw_rc = self.aw.clone();
+        let aw_guard = aw_rc.borrow();
+        let live = cards::Live { clock: &live_clock, battery: self.battery, aw: Some(&*aw_guard), ppp: ctx.pixels_per_point(), now: ctx.input(|i| i.time) };
         let mut icons = self.icons.take().unwrap();
         let center = d.pos - d.grab;
         let (sw, sh) = d.item.span(cfg.cols);
@@ -927,6 +931,13 @@ impl Lumen {
                                 self.open_search();
                             }
                         }
+                        Item::AppWidget { wid, .. } => {
+                            if let Some(r) = self.rect_of_key(geo, &key) {
+                                let k = ctx.pixels_per_point();
+                                let r = r.shrink(3.0);
+                                self.aw.borrow().tap(wid, (pos.x - r.left()) * k, (pos.y - r.top()) * k);
+                            }
+                        }
                     }
                 }
             }
@@ -964,6 +975,7 @@ impl Lumen {
                     Item::App(p) => Target::App { pkg: p.clone(), on_home: true },
                     Item::Folder { id, .. } => Target::Folder(*id),
                     Item::Widget { id, .. } => Target::Widget(*id),
+                    Item::AppWidget { id, .. } => Target::AppWidget(*id),
                 };
                 if self.edit {
                     return;
@@ -1145,6 +1157,9 @@ impl Lumen {
         match d.hover.clone() {
             Hover::Remove => {
                 // folders and widgets are simply removed; apps stay in the drawer
+                if let Item::AppWidget { wid, .. } = &item {
+                    self.aw.borrow_mut().delete(*wid);
+                }
                 placed = true;
             }
             Hover::Info => {
@@ -1294,7 +1309,9 @@ impl Lumen {
     }
 
     pub fn remove_item(&mut self, key: &str) {
-        self.cfg.remove_key(key);
+        if let Some(Item::AppWidget { wid, .. }) = self.cfg.remove_key(key) {
+            self.aw.borrow_mut().delete(wid);
+        }
         self.cfg.tidy_pages();
         self.dirty = true;
     }
@@ -1351,6 +1368,22 @@ fn paint_item<'a>(
         }
         Item::Widget { kind, .. } => {
             cards::paint(p, cell, *kind, cfg, pal, live);
+        }
+        Item::AppWidget { wid, .. } => {
+            let r = cell.shrink(3.0);
+            let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+            let mut shown = false;
+            if let Some(aw) = live.aw {
+                aw.request(*wid, r.width() * live.ppp, r.height() * live.ppp, live.now);
+                if let Some(tex) = aw.texture(*wid) {
+                    p.image(tex, r, uv, Color32::WHITE.gamma_multiply(alpha));
+                    shown = true;
+                }
+            }
+            if !shown {
+                p.rect_filled(r, cr(cfg.widget_radius), pal.card);
+                widgets::glyph_at(p, r.center(), Align2::CENTER_CENTER, ph::SQUARES_FOUR, 28.0, pal.dim);
+            }
         }
     }
 }

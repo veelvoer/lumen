@@ -1,6 +1,6 @@
 //! Desktop stand-in for the phone: a fixed list of apps with drawn icons.
 
-use super::{App, Battery, Category, Dynamic, Haptic, Insets, RawIcon};
+use super::{App, Battery, Category, Dynamic, Haptic, Insets, RawIcon, WidgetProvider};
 use std::collections::HashMap;
 
 const APPS: [(&str, &str, [u8; 3], Category); 45] = [
@@ -218,3 +218,46 @@ pub fn wallpaper_dark_text() -> bool {
 }
 
 pub fn request_high_refresh() {}
+
+pub fn widget_providers() -> Vec<WidgetProvider> {
+    vec![
+        WidgetProvider { pkg: "com.example.weather".into(), cls: "Weather".into(), label: "Weather".into(), w: 250, h: 110, configure: false },
+        WidgetProvider { pkg: "com.example.music".into(), cls: "Music".into(), label: "Music player".into(), w: 250, h: 110, configure: false },
+        WidgetProvider { pkg: "com.example.notes".into(), cls: "Notes".into(), label: "Quick note".into(), w: 110, h: 110, configure: true },
+    ]
+}
+pub fn widget_preview(_: &str, _: &str, px: i32) -> Option<RawIcon> {
+    widget_render(0, px, px / 2)
+}
+pub fn widget_allocate() -> i32 {
+    static N: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(100);
+    N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+pub fn widget_bind(_: i32, _: &str, _: &str) -> i32 {
+    1
+}
+pub fn widget_configure(_: i32) -> i32 {
+    0
+}
+pub fn widget_delete(_: i32) {}
+pub fn widget_render(id: i32, w: i32, h: i32) -> Option<RawIcon> {
+    let (w, h) = (w.max(2) as usize, h.max(2) as usize);
+    let mut rgba = vec![0u8; w * h * 4];
+    let hue = (id as usize * 37) % 255;
+    for y in 0..h {
+        for x in 0..w {
+            let o = (y * w + x) * 4;
+            let (dx, dy) = (x.min(w - 1 - x), y.min(h - 1 - y));
+            let r = 24.min(w.min(h) / 3);
+            let inside = !(dx < r && dy < r && (r - dx).pow(2) + (r - dy).pow(2) > r * r);
+            if inside {
+                rgba[o..o + 4].copy_from_slice(&[(60 + hue / 3) as u8, (90 + (x * 80 / w)) as u8, 160, 255]);
+            }
+        }
+    }
+    Some(RawIcon { size: w, rgba, mono: false })
+}
+pub fn widget_touch(_: i32, _: i32, _: f32, _: f32) {}
+pub fn take_widget_result() -> String {
+    String::new()
+}

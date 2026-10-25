@@ -25,6 +25,7 @@ enum Act {
     PhoneSettings,
     RenameFolder(u32),
     DissolveFolder(u32),
+    Resize(u32, i32, i32),
 }
 
 impl Lumen {
@@ -80,6 +81,13 @@ impl Lumen {
                 v
             }
             Target::Widget(id) => vec![(ph::X, "Remove widget", Act::RemoveKey(format!("widget:{id}")), true)],
+            Target::AppWidget(id) => vec![
+                (ph::ARROWS_OUT_LINE_HORIZONTAL, "Wider", Act::Resize(*id, 1, 0), false),
+                (ph::ARROWS_IN_LINE_HORIZONTAL, "Narrower", Act::Resize(*id, -1, 0), false),
+                (ph::ARROWS_OUT_LINE_VERTICAL, "Taller", Act::Resize(*id, 0, 1), false),
+                (ph::ARROWS_IN_LINE_VERTICAL, "Shorter", Act::Resize(*id, 0, -1), false),
+                (ph::X, "Remove widget", Act::RemoveKey(format!("awidget:{id}")), true),
+            ],
         }
     }
 
@@ -100,8 +108,8 @@ impl Lumen {
             close = true;
         }
 
-        let width = if ios { 250.0 } else { 232.0 };
-        let row_h = if ios { 46.0 } else { 50.0 };
+        let width = if ios { 250.0 } else if nothing { 214.0 } else { 232.0 };
+        let row_h = if ios { 46.0 } else if nothing { 44.0 } else { 50.0 };
         let height = items.len() as f32 * row_h + 12.0;
         let a = menu.anchor;
         let below = a.bottom() + 14.0 + height < screen.bottom() - 40.0;
@@ -208,11 +216,39 @@ impl Lumen {
                     }
                 }
             }
+            Act::Resize(id, dw, dh) => self.resize_app_widget(ctx, id, dw, dh),
             Act::EditHome => self.edit = true,
             Act::Settings => self.open_settings(),
             Act::Wallpaper => platform::open_wallpaper_picker(),
             Act::Widgets => self.widget_picker = true,
             Act::PhoneSettings => platform::open_system_settings(),
+        }
+    }
+
+    fn resize_app_widget(&mut self, ctx: &Context, id: u32, dw: i32, dh: i32) {
+        let (cols, rows) = (self.cfg.cols, self.cfg.rows);
+        let key = format!("awidget:{id}");
+        for pi in 0..self.cfg.pages.len() {
+            let Some(idx) = self.cfg.pages[pi].items.iter().position(|p| p.item.key() == key) else { continue };
+            let (col, row, w, h) = match &self.cfg.pages[pi].items[idx] {
+                crate::config::Placed { item: Item::AppWidget { w, h, .. }, col, row } => (*col, *row, *w, *h),
+                _ => return,
+            };
+            let nw = (w as i32 + dw).clamp(1, cols as i32) as usize;
+            let nh = (h as i32 + dh).clamp(1, rows as i32) as usize;
+            if (nw, nh) == (w, h) {
+                return;
+            }
+            if !self.cfg.fits(pi, col, row, nw, nh, Some(&key)) {
+                self.toast(ctx, "There is no room next to it");
+                return;
+            }
+            if let Item::AppWidget { w, h, .. } = &mut self.cfg.pages[pi].items[idx].item {
+                *w = nw;
+                *h = nh;
+            }
+            self.aw.borrow().refresh_soon(0);
+            return;
         }
     }
 
@@ -301,8 +337,15 @@ impl Lumen {
         let live_clock = self.clock.clone();
         let battery = self.battery;
         let mut add: Option<WidgetKind> = None;
+        let mut add_provider: Option<crate::platform::WidgetProvider> = None;
         let mut close = false;
         let mut picker_sc = std::mem::take(&mut self.picker_scroller);
+        let tab = self.picker_tab;
+        let mut new_tab: Option<u8> = None;
+        self.aw.borrow_mut().load_providers();
+        let aw_rc = self.aw.clone();
+        let providers: Vec<crate::platform::WidgetProvider> = aw_rc.borrow().providers.clone().unwrap_or_default();
+        let app_names: std::collections::HashMap<String, String> = providers.iter().filter_map(|p| self.app(&p.pkg).map(|a| (p.pkg.clone(), a.label.clone()))).collect();
         let k = ctx.pixels_per_point();
         let it = self.insets.top / k;
         let ib = self.insets.bottom / k;
@@ -314,10 +357,20 @@ impl Lumen {
             }
             ui.painter().rect_filled(sheet, egui::CornerRadius { nw: 28, ne: 28, sw: 0, se: 0 }, pal.sheet);
             ui.painter().text(pos2(sheet.left() + 24.0, sheet.top() + 30.0), Align2::LEFT_CENTER, "Widgets", fonts::body(&cfg, 22.0, true), pal.text);
+            // two tabs: the widgets Lumen draws itself, and the ones that belong to other apps
+            for (i, name) in ["Lumen", "Your apps"].iter().enumerate() {
+                let r = Rect::from_min_size(pos2(sheet.right() - 24.0 - (2 - i) as f32 * 112.0 + 8.0 * (2 - i) as f32 - 8.0, sheet.top() + 14.0), vec2(104.0, 34.0));
+                let on = tab == i as u8;
+                ui.painter().rect_filled(r, cr(17.0), if on { pal.accent } else { pal.card });
+                ui.painter().text(r.center(), Align2::CENTER_CENTER, *name, fonts::body(&cfg, 14.0, true), if on { pal.on_accent } else { pal.text });
+                if ui.interact(r, Id::new(("picker-tab", i)), Sense::click()).clicked() {
+                    new_tab = Some(i as u8);
+                }
+            }
             let body = Rect::from_min_max(pos2(sheet.left() + 12.0, sheet.top() + 64.0), pos2(sheet.right() - 12.0, sheet.bottom() - ib));
             ui.scope_builder(UiBuilder::new().max_rect(body), |ui| {
                 crate::scroll::show(ui, &mut picker_sc, "picker", body, true, |ui| {
-                    for kind in WidgetKind::ALL {
+                    for kind in WidgetKind::ALL.into_iter().filter(|_| tab == 0) {
                         let (w, h) = kind.span(cfg.cols);
                         let size = vec2(w as f32 * geo.cell.x, h as f32 * geo.cell.y);
                         ui.add_space(6.0);
@@ -327,7 +380,7 @@ impl Lumen {
                         ui.painter().rect_filled(rect.expand(4.0), cr(26.0), backdrop.gamma_multiply(0.35));
                         let mut preview_cfg = cfg.clone();
                         preview_cfg.font_scale = cfg.font_scale;
-                        let live = cards::Live { clock: &live_clock, battery };
+                        let live = cards::Live { clock: &live_clock, battery, aw: None, ppp: 1.0, now: 0.0 };
                         let mut ppal = pal;
                         ppal.home_text = pal.text;
                         cards::paint(&ui.painter_at(rect.expand(4.0)), rect, kind, &preview_cfg, &ppal, &live);
@@ -336,11 +389,54 @@ impl Lumen {
                         }
                         ui.add_space(8.0);
                     }
+                    // widgets that belong to other apps
+                    if tab == 1 && providers.is_empty() {
+                        ui.add_space(8.0);
+                        ui.label(egui::RichText::new("Looking…").font(fonts::body(&cfg, 14.0, false)).color(pal.dim));
+                    }
+                    let aw = aw_rc.borrow();
+                    let mut last_pkg = String::new();
+                    for p in providers.iter().filter(|_| tab == 1) {
+                        if p.pkg != last_pkg {
+                            last_pkg = p.pkg.clone();
+                            ui.add_space(14.0);
+                            let name = app_names.get(&p.pkg).cloned().unwrap_or_else(|| p.pkg.clone());
+                            ui.label(egui::RichText::new(name).font(fonts::body(&cfg, 14.0, true)).color(pal.dim));
+                        }
+                        let (cw, ch) = p.cells();
+                        let w = ui.available_width();
+                        let (row, resp) = ui.allocate_exact_size(vec2(w, 120.0), Sense::click());
+                        let painter = ui.painter_at(row);
+                        painter.rect_filled(row, cr(20.0), pal.card);
+                        if let Some((tex, size)) = aw.preview(p) {
+                            let maxw = 150.0f32;
+                            let maxh = 96.0f32;
+                            let s = (maxw / size[0] as f32).min(maxh / size[1] as f32).min(1.2);
+                            let isz = vec2(size[0] as f32 * s, size[1] as f32 * s);
+                            let ir = Rect::from_center_size(pos2(row.left() + 16.0 + maxw / 2.0, row.center().y), isz);
+                            painter.image(tex, ir, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+                        }
+                        let tx = row.left() + 16.0 + 150.0 + 16.0;
+                        painter.text(pos2(tx, row.center().y - 12.0), Align2::LEFT_CENTER, widgets::fit(&painter, &p.label, &fonts::body(&cfg, 16.0, false), row.right() - tx - 12.0), fonts::body(&cfg, 16.0, false), pal.text);
+                        painter.text(pos2(tx, row.center().y + 12.0), Align2::LEFT_CENTER, format!("{cw} x {ch}"), fonts::body(&cfg, 13.0, false), pal.dim);
+                        if resp.clicked() {
+                            add_provider = Some(p.clone());
+                        }
+                        ui.add_space(8.0);
+                    }
                     ui.add_space(30.0);
                 });
             });
         });
         self.picker_scroller = picker_sc;
+        if let Some(t) = new_tab {
+            self.picker_tab = t;
+            self.picker_scroller.reset();
+        }
+        if let Some(p) = add_provider {
+            self.aw.borrow().add(p);
+            self.toast(ctx, "Adding widget…");
+        }
         if let Some(kind) = add {
             let id = self.cfg.new_id();
             let pi = (self.page.round() as usize).min(self.cfg.pages.len().saturating_sub(1));

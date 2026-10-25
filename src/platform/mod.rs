@@ -106,6 +106,26 @@ pub struct Insets {
     pub bottom: f32,
 }
 
+/// A widget another app offers.
+#[derive(Clone, Debug)]
+pub struct WidgetProvider {
+    pub pkg: String,
+    pub cls: String,
+    pub label: String,
+    /// minimum size in dp
+    pub w: i32,
+    pub h: i32,
+    pub configure: bool,
+}
+
+impl WidgetProvider {
+    /// How many home screen cells it needs (Android's own rule: (dp + 30) / 70).
+    pub fn cells(&self) -> (usize, usize) {
+        let c = |dp: i32| (((dp + 30) as f32 / 70.0).ceil() as usize).clamp(1, 6);
+        (c(self.w), c(self.h))
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct Battery {
     pub level: u8,

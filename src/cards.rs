@@ -12,6 +12,9 @@ use egui::{pos2, vec2, Align2, Color32, Painter, Rect, Stroke, StrokeKind};
 pub struct Live<'a> {
     pub clock: &'a ClockInfo,
     pub battery: Battery,
+    pub aw: Option<&'a crate::appwidgets::AppWidgets>,
+    pub ppp: f32,
+    pub now: f64,
 }
 
 pub fn paint(p: &Painter, rect: Rect, kind: WidgetKind, cfg: &Config, pal: &Palette, live: &Live) {

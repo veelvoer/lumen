@@ -1,6 +1,7 @@
 #![allow(deprecated)]
 
 mod anim;
+mod appwidgets;
 mod app;
 mod bridge;
 mod cards;

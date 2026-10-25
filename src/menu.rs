@@ -26,6 +26,7 @@ enum Act {
     RenameFolder(u32),
     DissolveFolder(u32),
     Resize(u32, i32, i32),
+    StartResize(u32),
 }
 
 impl Lumen {
@@ -82,10 +83,7 @@ impl Lumen {
             }
             Target::Widget(id) => vec![(ph::X, "Remove widget", Act::RemoveKey(format!("widget:{id}")), true)],
             Target::AppWidget(id) => vec![
-                (ph::ARROWS_OUT_LINE_HORIZONTAL, "Wider", Act::Resize(*id, 1, 0), false),
-                (ph::ARROWS_IN_LINE_HORIZONTAL, "Narrower", Act::Resize(*id, -1, 0), false),
-                (ph::ARROWS_OUT_LINE_VERTICAL, "Taller", Act::Resize(*id, 0, 1), false),
-                (ph::ARROWS_IN_LINE_VERTICAL, "Shorter", Act::Resize(*id, 0, -1), false),
+                (ph::ARROWS_OUT_CARDINAL, "Resize", Act::StartResize(*id), false),
                 (ph::X, "Remove widget", Act::RemoveKey(format!("awidget:{id}")), true),
             ],
         }
@@ -217,6 +215,7 @@ impl Lumen {
                 }
             }
             Act::Resize(id, dw, dh) => self.resize_app_widget(ctx, id, dw, dh),
+            Act::StartResize(id) => self.resize = Some(format!("awidget:{id}")),
             Act::EditHome => self.edit = true,
             Act::Settings => self.open_settings(),
             Act::Wallpaper => platform::open_wallpaper_picker(),
@@ -454,6 +453,59 @@ impl Lumen {
         }
         if close {
             self.widget_picker = false;
+        }
+    }
+
+    /// A sheet with the patch notes after an update.
+    pub fn whats_new_ui(&mut self, ctx: &Context, screen: Rect) {
+        let Some(notes) = self.whats_new.clone() else { return };
+        let pal = self.pal;
+        let cfg = self.cfg.clone();
+        let k = ctx.pixels_per_point();
+        let (it, ib) = (self.insets.top / k, self.insets.bottom / k);
+        let mut close = false;
+        let t = self.notes_t.x.clamp(0.0, 1.0);
+        let sheet_top = screen.top() + it + 70.0 + (1.0 - self.notes_t.x) * screen.height() * 0.5;
+        Area::new(Id::new("whats-new")).order(Order::Foreground).fixed_pos(screen.min).show(ctx, |ui| {
+            ui.painter().rect_filled(screen, 0, Color32::from_black_alpha((140.0 * t) as u8));
+            let bg = Rect::from_min_max(screen.min, pos2(screen.right(), sheet_top));
+            if ui.interact(bg, Id::new("notes-bg"), Sense::click()).clicked() {
+                close = true;
+            }
+            let sheet = Rect::from_min_max(pos2(screen.left(), sheet_top), screen.max);
+            ui.painter().rect_filled(sheet, egui::CornerRadius { nw: 30, ne: 30, sw: 0, se: 0 }, pal.sheet);
+            let p = ui.painter();
+            p.rect_filled(Rect::from_center_size(pos2(sheet.center().x, sheet.top() + 12.0), vec2(40.0, 4.0)), cr(2.0), pal.dim.gamma_multiply(0.5));
+            widgets::glyph_fill_at(p, pos2(sheet.left() + 36.0, sheet.top() + 52.0), Align2::CENTER_CENTER, ph::SPARKLE, 26.0, pal.accent);
+            p.text(pos2(sheet.left() + 64.0, sheet.top() + 52.0), Align2::LEFT_CENTER, "What's new", fonts::body(&cfg, 24.0, true), pal.text);
+            let body = Rect::from_min_max(pos2(sheet.left() + 22.0, sheet.top() + 92.0), pos2(sheet.right() - 22.0, sheet.bottom() - ib - 84.0));
+            ui.scope_builder(UiBuilder::new().max_rect(body), |ui| {
+                let mut sc = std::mem::take(&mut self.notes_scroller);
+                crate::scroll::show(ui, &mut sc, "notes", body, t > 0.9, |ui| {
+                    ui.set_width(body.width());
+                    for (ver, lines) in &notes {
+                        ui.add_space(8.0);
+                        ui.label(egui::RichText::new(format!("Lumen {ver}")).font(fonts::body(&cfg, 17.0, true)).color(pal.accent));
+                        ui.add_space(4.0);
+                        for l in lines {
+                            let bullet = l.starts_with('•');
+                            ui.label(egui::RichText::new(l).font(fonts::body(&cfg, 15.0, false)).color(if bullet { pal.text } else { pal.dim }));
+                            ui.add_space(5.0);
+                        }
+                        ui.add_space(10.0);
+                    }
+                });
+                self.notes_scroller = sc;
+            });
+            let btn = Rect::from_min_size(pos2(sheet.left() + 22.0, sheet.bottom() - ib - 70.0), vec2(sheet.width() - 44.0, 52.0));
+            ui.painter().rect_filled(btn, cr(26.0), pal.accent);
+            ui.painter().text(btn.center(), Align2::CENTER_CENTER, "Got it", fonts::body(&cfg, 16.0, true), pal.on_accent);
+            if ui.interact(btn, Id::new("notes-ok"), Sense::click()).clicked() {
+                close = true;
+            }
+        });
+        if close {
+            self.whats_new = None;
         }
     }
 

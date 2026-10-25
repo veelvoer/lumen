@@ -108,7 +108,9 @@ public final class Glue {
         a.runOnUiThread(new Runnable() {
             @Override public void run() {
                 try {
-                    a.setRequestedOrientation(free ? android.content.pm.ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR : android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
+                    // tablets always rotate: a portrait lock on a landscape-first screen is unusable
+                    boolean tablet = a.getResources().getConfiguration().smallestScreenWidthDp >= 600;
+                    a.setRequestedOrientation(free || tablet ? android.content.pm.ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR : android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
                 } catch (Throwable ignored) {}
             }
         });

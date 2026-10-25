@@ -56,6 +56,8 @@ struct Ctl {
     changed: bool,
     /// a change that does not alter the look (behavior, gestures, performance) keeps the preset's name
     keep_preset: bool,
+    /// a page is sliding: taps that would navigate are ignored, so rapid tapping cannot glitch
+    busy: bool,
     restyle_preset: bool,
     preset: Option<Preset>,
     toast: Option<String>,
@@ -82,6 +84,7 @@ fn tonal_icon(p: &egui::Painter, center: egui::Pos2, glyph: &str, c: &Ctl) {
 
 /// A row you can tap to open a page. Returns true when tapped.
 fn nav_row(ui: &mut Ui, c: &Ctl, glyph: &str, title: &str, sub: &str, badge: bool) -> bool {
+    let ok = !c.busy;
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 68.0), Sense::click());
     let p = ui.painter();
     if resp.is_pointer_button_down_on() {
@@ -98,7 +101,7 @@ fn nav_row(ui: &mut Ui, c: &Ctl, glyph: &str, title: &str, sub: &str, badge: boo
     if badge {
         p.circle_filled(rect.right_center() - vec2(46.0, 0.0), 5.0, c.pal.accent);
     }
-    resp.clicked()
+    resp.clicked() && ok
 }
 
 fn switch_row(ui: &mut Ui, c: &mut Ctl, title: &str, sub: &str, v: &mut bool) {
@@ -233,7 +236,7 @@ pub fn show(l: &mut Lumen, root: &mut Ui) {
     let screen = ctx.content_rect();
     let k = ctx.pixels_per_point();
     let (top, bottom) = (l.insets.top / k, l.insets.bottom / k);
-    let mut c = Ctl { ctx: ctx.clone(), pal: l.pal, fcfg: l.cfg.clone(), changed: false, keep_preset: true, restyle_preset: false, preset: None, toast: None };
+    let mut c = Ctl { ctx: ctx.clone(), pal: l.pal, fcfg: l.cfg.clone(), changed: false, keep_preset: true, busy: false, restyle_preset: false, preset: None, toast: None };
     let before = (l.cfg.cols, l.cfg.rows, l.cfg.dock_slots);
 
     // how the whole screen arrives: iOS slides in from the right, Pixel rises and fades, Nothing just fades
@@ -248,10 +251,18 @@ pub fn show(l: &mut Lumen, root: &mut Ui) {
     // sub pages push and pop with the same spring
     l.depth.target = l.settings_stack.len() as f32;
     let depth = l.depth.x.max(0.0);
-    if !l.depth.moving() && l.settings_view.len() != l.settings_stack.len() {
+    // pages that are leaving stay drawn until the spring settles; the live stack always wins where it has a page
+    if !l.depth.moving() {
         l.settings_view = l.settings_stack.clone();
     }
-    let view = if l.settings_view.len() > l.settings_stack.len() { l.settings_view.clone() } else { l.settings_stack.clone() };
+    let mut view = l.settings_stack.clone();
+    for (i, p) in l.settings_view.iter().enumerate() {
+        if i >= view.len() {
+            view.push(*p);
+        }
+    }
+    l.settings_view = view.clone();
+    c.busy = (l.depth.x - l.depth.target).abs() > 0.2 || (l.screen_t.x - l.screen_t.target).abs() > 0.2;
     let (k0, k1) = (depth.floor() as usize, depth.ceil() as usize);
     let mut shown = vec![k0];
     if k1 != k0 {
@@ -275,7 +286,7 @@ pub fn show(l: &mut Lumen, root: &mut Ui) {
                 let p = ui.painter();
                 widgets::glyph_at(p, bar.left_center() + vec2(30.0, 0.0), Align2::CENTER_CENTER, ph::ARROW_LEFT, 24.0, c.pal.text);
                 p.text(bar.left_center() + vec2(66.0, 0.0), Align2::LEFT_CENTER, page.map(|p| p.title()).unwrap_or("Lumen"), c.body(22.0, true), c.pal.text);
-                if resp.clicked() && ui.input(|i| i.pointer.interact_pos().is_some_and(|p| p.x - rect.left() < 120.0)) {
+                if resp.clicked() && !c.busy && ui.input(|i| i.pointer.interact_pos().is_some_and(|p| p.x - rect.left() < 120.0)) {
                     if l.settings_stack.pop().is_none() {
                         l.screen = Screen::Home;
                     }
@@ -701,6 +712,10 @@ fn updates_page(ui: &mut Ui, l: &mut Lumen, c: &mut Ctl) {
     } else if button(ui, c, ph::ARROW_CLOCKWISE, "Check for updates", false) && !st.busy {
         l.upd.check(move || ctx.request_repaint());
     }
+    if button(ui, c, ph::SPARKLE, "What is new in this version", false) {
+        l.show_current_notes();
+        l.screen = Screen::Home;
+    }
     switch_row(ui, c, "Look for updates on start", "", &mut l.cfg.auto_update);
     if st.busy {
         c.ctx.request_repaint_after(std::time::Duration::from_millis(200));
@@ -782,6 +797,12 @@ fn behavior_page(ui: &mut Ui, l: &mut Lumen, c: &mut Ctl) {
     }
     if button(ui, c, ph::DEVICE_MOBILE, "Phone settings", false) {
         platform::open_system_settings();
+    }
+    section(ui, c, "Navigation gestures");
+    note(ui, c, "Android only offers swipe navigation when the home app is the one that came with the phone: third-party launchers cannot provide the recent-apps swipe, so the system falls back to the 3-button bar and hides the gesture choice. To change it, switch the home app back for a moment, change the setting, then switch to Lumen again.");
+    ui.add_space(8.0);
+    if button(ui, c, ph::HAND_SWIPE_RIGHT, "Choose home app", false) {
+        platform::pick_default_home();
     }
 }
 

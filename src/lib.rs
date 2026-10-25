@@ -12,6 +12,7 @@ mod fonts;
 mod home;
 mod icons;
 mod menu;
+mod notes;
 mod perf;
 mod phosphor;
 mod scroll;

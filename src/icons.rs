@@ -84,7 +84,7 @@ fn hash(s: &str) -> String {
 }
 
 fn cache_file(dir: &std::path::Path, app: &App, px: i32, mono: bool) -> PathBuf {
-    dir.join(hash(&format!("{}|{}|{}|{}|{}|v2", app.pkg, app.cls, app.stamp, px, mono)))
+    dir.join(hash(&format!("{}|{}|{}|{}|{}|v3", app.pkg, app.cls, app.stamp, px, mono)))
 }
 
 fn read_cache(path: &std::path::Path, px: i32) -> Option<platform::RawIcon> {

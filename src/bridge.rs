@@ -26,6 +26,7 @@ pub struct Snapshot {
     pub dark: bool,
     pub dark_text: bool,
     pub refresh_hz: f32,
+    pub default_home: bool,
     pub home_pressed: bool,
     pub settings_requested: bool,
 }
@@ -64,6 +65,7 @@ fn poll(s: &mut Snapshot, slow: bool) {
         s.dark = platform::is_dark();
         s.dark_text = platform::wallpaper_dark_text();
         s.refresh_hz = platform::refresh_rate();
+        s.default_home = platform::is_default_home();
     }
 }
 

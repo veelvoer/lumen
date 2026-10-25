@@ -65,6 +65,8 @@ pub enum Touch {
     LibraryScroll,
     /// the swipe-down action fired; wait for the finger to lift
     Spent,
+    /// dragging one edge of a selected widget: 0 left, 1 top, 2 right, 3 bottom
+    Resize(u8),
     Drag(Drag),
 }
 
@@ -127,6 +129,24 @@ impl std::ops::DerefMut for Cfg {
     }
 }
 
+/// An item that is leaving: it shrinks away (removed) or flies into a folder (merged).
+pub struct Ghost {
+    pub item: Item,
+    pub from: Rect,
+    pub to: Rect,
+    pub t: Spring,
+    /// from/to are the icon squares themselves, not whole grid cells
+    pub icon_space: bool,
+}
+
+/// State of the letter scroller in the drawer.
+#[derive(Default)]
+pub struct Scrub {
+    pub act: Spring,
+    pub y: Spring,
+    pub last: Option<usize>,
+}
+
 pub struct Lumen {
     pub cfg: Cfg,
     pub dir: String,
@@ -139,6 +159,10 @@ pub struct Lumen {
     pub light: bool,
     last_offset_at: f64,
     last_hr: Option<bool>,
+    scan_pending: bool,
+    last_scan: std::time::Instant,
+    /// 1 right after coming back from an app, then eases to 0: the home screen settles in
+    pub resume_t: Spring,
     pub system_dark: bool,
     pub wallpaper_dark_text: bool,
     pub apps: std::rc::Rc<Vec<App>>,
@@ -173,6 +197,11 @@ pub struct Lumen {
     pub press_key: Option<String>,
     pub vel_smooth: egui::Vec2,
     pub edit: bool,
+    pub ghosts: Vec<Ghost>,
+    pub prev_items: HashMap<String, (Item, Rect)>,
+    pub items_ready: u32,
+    /// key of the app widget whose size is being changed
+    pub resize: Option<String>,
     pub open_folder: Option<u32>,
     pub open_category: Option<Category>,
     pub folder_t: f32,
@@ -180,6 +209,9 @@ pub struct Lumen {
     pub menu: Option<Menu>,
     pub dialog: Option<Dialog>,
     pub widget_picker: bool,
+    /// patch notes being shown: (version, lines)
+    pub whats_new: Option<Vec<(String, Vec<String>)>>,
+    pub notes_t: Spring,
     pub picker_tab: u8,
     pub search_open: bool,
     pub query: String,
@@ -189,10 +221,12 @@ pub struct Lumen {
     /// clicks right after a long press are not taps
     pub suppress_click: f64,
     pub drawer_scroll_to: Option<f32>,
+    pub scrub: Scrub,
     pub scroller: crate::scroll::Scroller,
     pub aw: std::rc::Rc<std::cell::RefCell<crate::appwidgets::AppWidgets>>,
     pub lib_scroller: crate::scroll::Scroller,
     pub picker_scroller: crate::scroll::Scroller,
+    pub notes_scroller: crate::scroll::Scroller,
     pub search_scroller: crate::scroll::Scroller,
     pub settings_scrollers: Vec<crate::scroll::Scroller>,
 
@@ -228,6 +262,9 @@ impl Lumen {
             light: false,
             last_offset_at: 0.0,
             last_hr: None,
+            scan_pending: false,
+            last_scan: std::time::Instant::now(),
+            resume_t: Spring::at(0.0),
             system_dark,
             wallpaper_dark_text: false,
             icons: Some(Icons::new(ctx, icons::Style { shape: cfg.shape, radius: cfg.icon_radius, mono: cfg.themed_icons, px: icons::px_for(cfg.icon_size.max(cfg.dock_icon_size), ctx.pixels_per_point()) }, dir.clone())),
@@ -261,6 +298,10 @@ impl Lumen {
             press_key: None,
             vel_smooth: egui::Vec2::ZERO,
             edit: false,
+            ghosts: vec![],
+            prev_items: HashMap::new(),
+            items_ready: 0,
+            resize: None,
             open_folder: None,
             open_category: None,
             folder_t: 0.0,
@@ -268,6 +309,8 @@ impl Lumen {
             menu: None,
             dialog: None,
             widget_picker: false,
+            whats_new: None,
+            notes_t: Spring::at(0.0),
             picker_tab: 1,
             search_open: false,
             query: String::new(),
@@ -276,10 +319,12 @@ impl Lumen {
             toast: None,
             suppress_click: 0.0,
             drawer_scroll_to: None,
+            scrub: Scrub::default(),
             scroller: Default::default(),
             aw: std::rc::Rc::new(std::cell::RefCell::new(crate::appwidgets::AppWidgets::new(ctx))),
             lib_scroller: Default::default(),
             picker_scroller: Default::default(),
+            notes_scroller: Default::default(),
             search_scroller: Default::default(),
             settings_scrollers: vec![],
             insets: Insets::default(),
@@ -289,7 +334,7 @@ impl Lumen {
             was_focused: true,
             last_offset: -1.0,
             last_blur: -1,
-            last_bars: (false, false, false),
+            last_bars: (true, true, true),
             last_light: None,
             perf: Default::default(),
             frame_budget: 1.0 / 60.0,
@@ -358,6 +403,24 @@ impl Lumen {
     // ───────────────────────────── per-frame upkeep ─────────────────────────────
 
     pub fn tick(&mut self, ctx: &Context) {
+        // a tablet gets a bigger grid and bigger icons once, before the first layout is made
+        if !self.cfg.adapted {
+            let r = ctx.content_rect();
+            if r.width() > 1.0 {
+                self.cfg.adapted = true;
+                if r.width().min(r.height()) >= 600.0 {
+                    self.cfg.big = true;
+                    self.cfg.cols = 7;
+                    self.cfg.rows = 5;
+                    self.cfg.icon_size = 68.0;
+                    self.cfg.dock_icon_size = 68.0;
+                    self.cfg.dock_slots = 6;
+                    self.cfg.drawer_cols = 8;
+                    self.cfg.rotate = true;
+                }
+                self.dirty = true;
+            }
+        }
         if let Some(ic) = self.icons.as_mut() {
             ic.pump();
         }
@@ -371,6 +434,12 @@ impl Lumen {
         self.handle_widget_events(ctx);
         if let Ok(mut list) = self.apps_rx.try_recv() {
             list.dedup_by(|a, b| a.pkg == b.pkg);
+            self.scan_pending = false;
+            // nothing installed, removed or updated since last time: do no work at all
+            let same = list.len() == self.apps.len() && list.iter().zip(self.apps.iter()).all(|(a, b)| a.pkg == b.pkg && a.stamp == b.stamp && a.label == b.label);
+            if same {
+                return self.tick_rest(ctx);
+            }
             self.by_pkg = list.iter().enumerate().map(|(i, a)| (a.pkg.clone(), i)).collect();
             self.apps = std::rc::Rc::new(list);
             if !self.cfg.seeded {
@@ -399,9 +468,38 @@ impl Lumen {
             self.cfg.tidy(&|p| known.contains(p));
             self.dirty = true;
             ctx.request_repaint();
+            self.check_notes();
         }
+        self.tick_rest(ctx);
+    }
+
+    /// After an update, show what is new once. A fresh install shows nothing.
+    fn check_notes(&mut self) {
+        if self.cfg.notes_seen == self.version {
+            return;
+        }
+        let seen = self.cfg.notes_seen.clone();
+        self.cfg.notes_seen = self.version.clone();
+        self.dirty = true;
+        if !seen.is_empty() {
+            let n = crate::notes::since(&seen, &self.version);
+            if !n.is_empty() {
+                self.whats_new = Some(n);
+            }
+        }
+    }
+
+    pub fn show_current_notes(&mut self) {
+        let n = crate::notes::since("", &self.version);
+        self.whats_new = Some(n.into_iter().take(1).collect());
+    }
+
+    fn tick_rest(&mut self, ctx: &Context) {
         // everything the phone tells us arrives from the background worker; nothing here can stall a frame
         let snap: Snapshot = self.bridge.snapshot();
+        if snap.battery.is_some() {
+            self.default_home = snap.default_home;
+        }
         if snap.refresh_hz >= 30.0 {
             self.frame_budget = 1.0 / snap.refresh_hz.min(144.0);
         }
@@ -432,8 +530,13 @@ impl Lumen {
 
         let focused = ctx.input(|i| i.focused);
         if focused && !self.was_focused {
-            self.apps_rx = spawn_app_scan(ctx);
-            self.default_home = platform::is_default_home();
+            // coming back from an app: look for installed or removed apps, but not more than every 30 seconds and without hurry
+            if !self.scan_pending && self.last_scan.elapsed() > std::time::Duration::from_secs(30) {
+                self.scan_pending = true;
+                self.last_scan = std::time::Instant::now();
+                self.apps_rx = spawn_app_scan(ctx);
+            }
+            self.resume_t.snap(1.0);
             self.bridge.high_refresh(!self.light);
         }
         self.was_focused = focused;
@@ -494,7 +597,9 @@ impl Lumen {
     }
 
     pub fn back(&mut self, ctx: &Context) {
-        if self.dialog.is_some() {
+        if self.whats_new.is_some() {
+            self.whats_new = None;
+        } else if self.dialog.is_some() {
             self.dialog = None;
         } else if self.menu.is_some() {
             self.menu = None;
@@ -512,6 +617,8 @@ impl Lumen {
             self.open_category = None;
         } else if self.drawer_open {
             self.close_drawer(ctx);
+        } else if self.resize.is_some() {
+            self.resize = None;
         } else if self.edit {
             self.edit = false;
         } else {

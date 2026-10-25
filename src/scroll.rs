@@ -19,6 +19,10 @@ pub struct Scroller {
     pub moved: bool,
     /// the press landed on a moving fling (it only stops it, it is not a tap)
     suppress: bool,
+    /// settings pages hold sliders: a drag that starts on a widget must not scroll
+    pub respect_widgets: bool,
+    /// presses that start here belong to something else (the letter scroller)
+    pub exclude: Option<Rect>,
     start: f32,
     start_x: f32,
     last: f32,
@@ -91,7 +95,7 @@ impl Scroller {
     /// Drives itself from the pointer: press inside `area`, drag, let go. Returns true while it needs more frames.
     pub fn update(&mut self, ctx: &Context, area: Rect, max: f32, enabled: bool, dt: f32) -> bool {
         let (pressed, down, pos, time) = ctx.input(|i| (i.pointer.primary_pressed(), i.pointer.primary_down(), i.pointer.latest_pos(), i.time));
-        if pressed && enabled && pos.is_some_and(|p| area.contains(p)) {
+        if pressed && enabled && pos.is_some_and(|p| area.contains(p) && !self.exclude.is_some_and(|e| e.contains(p))) {
             self.holding = true;
             self.moved = false;
             self.suppress = self.vel.abs() > 30.0;
@@ -111,7 +115,7 @@ impl Scroller {
                         if dx > SLOP && dx > dy {
                             // sideways: a slider or a page swipe, not ours
                             self.holding = false;
-                        } else if dy > SLOP && !ctx.egui_is_using_pointer() {
+                        } else if dy > SLOP && !(self.respect_widgets && ctx.egui_is_using_pointer()) {
                             self.moved = true;
                             self.last = p.y; // no jump when the scroll begins
                         }
@@ -152,6 +156,7 @@ pub fn show<R>(ui: &mut Ui, sc: &mut Scroller, salt: impl std::hash::Hash + std:
     let ctx = ui.ctx().clone();
     let dt = ctx.input(|i| i.stable_dt).clamp(0.001, 0.05);
     let max = sc.max;
+    sc.respect_widgets = true;
     sc.update(&ctx, body, max, enabled, dt);
     let out = ScrollArea::vertical()
         .id_salt(salt)

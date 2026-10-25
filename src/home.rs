@@ -1,5 +1,6 @@
 //! The home screen: geometry, painting, and the touch machine (tap, swipe, long press, drag and drop).
 
+use std::collections::HashMap;
 use crate::app::*;
 use crate::cards;
 use crate::anim;
@@ -64,8 +65,12 @@ impl Lumen {
         let margin = if c.preset == Preset::Ios { 10.0 } else { 12.0 } + c.margin_side;
         let left = screen.left() + il.max(margin);
         let right = screen.right() - ir.max(margin);
+        let (gl, gr) = (left, right);
+        // on wide screens the bars stay a comfortable width
+        let (left, right) = if right - left > 760.0 { let mid = (left + right) / 2.0; (mid - 380.0, mid + 380.0) } else { (left, right) };
         let mut y = bottom;
         let mut search = None;
+
         if c.search == Search::Bottom && matches!(c.preset, Preset::Pixel | Preset::Custom) {
             // Pixel: the search pill sits under the dock
             search = Some(Rect::from_min_max(pos2(left + 4.0, y - 56.0), pos2(right - 4.0, y)));
@@ -86,7 +91,7 @@ impl Lumen {
             search = Some(Rect::from_min_size(pos2(left + 6.0, top), vec2(right - left - 12.0, 52.0)));
             top += 62.0;
         }
-        let grid = Rect::from_min_max(pos2(left, top), pos2(right, (y - 4.0).max(top + 100.0)));
+        let grid = Rect::from_min_max(pos2(gl, top), pos2(gr, (y - 4.0).max(top + 100.0)));
         let cell = vec2(grid.width() / c.cols as f32, grid.height() / c.rows as f32);
         let dock_slot_w = (dock.width() / c.dock_slots.max(1) as f32).min(110.0);
         let _ = icon;
@@ -148,9 +153,10 @@ impl Lumen {
             let _s = crate::perf::span(crate::perf::Sec::Springs);
             self.step_springs(ctx, dt);
         }
+        self.track_items(&geo);
         // the root ui must be claimed, everything is painted in layers
         egui::CentralPanel::default().frame(Frame::NONE).show(root, |_| {});
-        let covered = self.drawer >= 0.995 && self.cfg.drawer_opacity >= 0.99 && self.screen == Screen::Home;
+        let covered = self.drawer >= 0.995 && self.screen == Screen::Home;
         if !covered {
             let _s = crate::perf::span(crate::perf::Sec::Paint);
             self.paint_home(ctx, &geo, dt);
@@ -177,6 +183,9 @@ impl Lumen {
                 self.dialog_ui(ctx, screen);
             }
         }
+        if self.whats_new.is_some() || self.notes_t.x > 0.01 {
+            self.whats_new_ui(ctx, screen);
+        }
         self.toast_ui(ctx, screen);
 
         if self.cfg.page_dots || self.has_live_widget() {
@@ -184,6 +193,55 @@ impl Lumen {
             let wait = if self.has_analog() && !self.light { 1 } else { 61u64.saturating_sub(s).max(1) };
             ctx.request_repaint_after(std::time::Duration::from_secs(wait));
         }
+    }
+
+    /// Gives new items a springy entrance and removed items a shrinking exit.
+    fn track_items(&mut self, geo: &Geo) {
+        if self.items_ready < 40 && self.cfg.seeded && !self.apps.is_empty() {
+            self.items_ready += 1;
+        }
+        let ready = self.items_ready >= 40;
+        let mut now: HashMap<String, (Item, Rect)> = HashMap::new();
+        let page = self.page.round() as usize;
+        for (pi, pg) in self.cfg.pages.iter().enumerate() {
+            for pl in &pg.items {
+                let (w, h) = pl.item.span(self.cfg.cols);
+                let r = geo.cell_rect(pl.col, pl.row, w.min(self.cfg.cols), h.min(self.cfg.rows));
+                let r = r.translate(vec2((pi as f32 - self.page) * geo.screen.width(), 0.0));
+                now.insert(pl.item.key(), (pl.item.clone(), r));
+            }
+        }
+        let n = self.cfg.dock_items.len();
+        for (i, it) in self.cfg.dock_items.iter().enumerate() {
+            now.insert(it.key(), (it.clone(), geo.dock_slot(i, n)));
+        }
+        for (key, (_, r)) in &now {
+            if !self.item_sp.contains_key(key) {
+                self.item_sp.insert(key.clone(), anim::Spring2::at(r.min));
+                if ready {
+                    self.scale_sp.insert(key.clone(), anim::Spring { x: 0.55, v: 0.0, target: 1.0 });
+                }
+            }
+        }
+        let dragging = if let Touch::Drag(d) = &self.touch { Some(d.item.key()) } else { None };
+        let lifted = if let Touch::Lifted { item, .. } = &self.touch { Some(item.key()) } else { None };
+        if ready {
+            for (key, (item, r)) in &self.prev_items {
+                if !now.contains_key(key) && dragging.as_deref() != Some(key.as_str()) && lifted.as_deref() != Some(key.as_str()) && self.edit_gone_ok(key) {
+                    let on_page = r.right() > 0.0 && r.left() < geo.screen.width();
+                    if on_page {
+                        self.ghosts.push(Ghost { item: item.clone(), from: *r, to: Rect::from_center_size(r.center(), r.size() * 0.55), t: anim::Spring::at(0.0), icon_space: false });
+                    }
+                }
+            }
+        }
+        let _ = page;
+        self.prev_items = now;
+    }
+
+    /// Items that vanish because a drag picked them up are not "removed".
+    fn edit_gone_ok(&self, key: &str) -> bool {
+        !matches!(&self.touch, Touch::Drag(d) if d.item.key() == key)
     }
 
     /// One frame of every spring that is not following a finger.
@@ -210,6 +268,15 @@ impl Lumen {
         if !matches!(self.touch, Touch::LibraryScroll) {
             busy |= self.lib_scroller.step(dt, self.lib_max);
         }
+        self.notes_t.target = if self.whats_new.is_some() { 1.0 } else { 0.0 };
+        busy |= self.notes_t.step(dt, f.popup);
+        for g in self.ghosts.iter_mut() {
+            g.t.target = 1.0;
+            busy |= g.t.step(dt, f.item);
+        }
+        self.ghosts.retain(|g| g.t.x < 0.97 || g.t.moving());
+        self.resume_t.target = 0.0;
+        busy |= self.resume_t.step(dt, f.screen);
         self.menu_t.target = if self.menu.is_some() { 1.0 } else { 0.0 };
         busy |= self.menu_t.step(dt, f.menu);
         if self.menu.is_none() && self.menu_t.x < 0.02 {
@@ -280,12 +347,13 @@ impl Lumen {
             Preset::Nothing => (0.0, 0.75),
             Preset::Custom => (0.04, 0.3),
         };
-        let r = 1.0 - recede * amount;
+        let resume = self.resume_t.x.clamp(0.0, 1.0);
+        let r = 1.0 - recede * amount + 0.06 * resume;
         let tf = |tx: f32, s: f32| {
             let s_total = r * s;
             egui::emath::TSTransform::new(centre * (1.0 - s_total) + vec2(tx * r, 0.0), s_total)
         };
-        let base_alpha = 1.0 - fade * amount;
+        let base_alpha = (1.0 - fade * amount) * (1.0 - 0.4 * resume);
 
         let lib = if cfg.app_library { Some((self.lib_groups(), self.lib_layout(geo, 0.0))) } else { None };
         if let Some((_, (_, _, content))) = &lib {
@@ -450,9 +518,11 @@ impl Lumen {
             let me = &*self;
             layer(ctx, "chrome", 0, screen, egui::emath::TSTransform::IDENTITY, 1.0, |p| me.paint_edit_chrome(p, geo));
         }
+        self.paint_resize(ctx, geo);
         self.paint_drag(ctx, geo);
+        self.paint_ghosts(ctx, geo);
         // keep the stacking order stable when pages come and go
-        for name in ["dock", "top", "popup", "chrome", "drag"] {
+        for name in ["dock", "top", "popup", "chrome", "resize", "drag", "ghost"] {
             ctx.move_to_top(egui::LayerId::new(egui::Order::Middle, egui::Id::new(("lumen-layer", name, 0usize))));
         }
         if moving {
@@ -681,6 +751,52 @@ impl Lumen {
         Some(if widget { r } else { self.icon_rect(r) })
     }
 
+    fn paint_ghosts(&mut self, ctx: &Context, geo: &Geo) {
+        if self.ghosts.is_empty() {
+            layer(ctx, "ghost", 0, geo.screen, egui::emath::TSTransform::IDENTITY, 0.0, |_| {});
+            return;
+        }
+        let cfg = self.cfg.clone();
+        let pal = self.pal;
+        let live_clock = self.clock.clone();
+        let live = cards::Live { clock: &live_clock, battery: self.battery, aw: None, ppp: 1.0, now: 0.0 };
+        let mut icons = self.icons.take().unwrap();
+        let ghosts: Vec<(Item, Rect, f32, bool)> = self
+            .ghosts
+            .iter()
+            .map(|g| {
+                let t = g.t.x.clamp(0.0, 1.2);
+                let lerp = |a: f32, b: f32| a + (b - a) * t;
+                let r = Rect::from_min_max(pos2(lerp(g.from.min.x, g.to.min.x), lerp(g.from.min.y, g.to.min.y)), pos2(lerp(g.from.max.x, g.to.max.x), lerp(g.from.max.y, g.to.max.y)));
+                (g.item.clone(), r, (1.0 - t * if g.icon_space { 0.9 } else { 1.0 }).clamp(0.0, 1.0), g.icon_space)
+            })
+            .collect();
+        layer(ctx, "ghost", 0, geo.screen, egui::emath::TSTransform::IDENTITY, 1.0, |p| {
+            let find = |pkg: &str| self.by_pkg.get(pkg).map(|&i| &self.apps[i]);
+            let mut labels = widgets::Labels::default();
+            for (item, rect, alpha, icon_space) in &ghosts {
+                if *icon_space {
+                    if let Item::App(pkg) = item {
+                        if let Some(app) = find(pkg) {
+                            widgets::app_icon(p, *rect, app, &mut icons, &cfg, &pal, 1.0, 0.0, *alpha);
+                        }
+                    }
+                } else {
+                    let ic = |c: Rect| {
+                        let size = cfg.eff();
+                        let label_h = if cfg.labels { 16.0 * cfg.font_scale * cfg.label_size / 12.0 } else { 0.0 };
+                        let total = size + if cfg.labels { 6.0 + label_h } else { 0.0 };
+                        let top = c.top() + ((c.height() - total) / 2.0).max(2.0);
+                        Rect::from_min_size(pos2(c.center().x - size / 2.0, top), vec2(size, size))
+                    };
+                    paint_item(p, item, *rect, &ic, &cfg, &pal, &mut icons, &find, &self.badges, &live, 1.0, 0.0, *alpha, true, false, &mut labels);
+                }
+            }
+            labels.flush(p, &cfg);
+        });
+        self.icons = Some(icons);
+    }
+
     fn icon_rect_for(&self, item: &Item, cell: Rect) -> Rect {
         match item {
             Item::Widget { .. } => cell,
@@ -700,6 +816,84 @@ impl Lumen {
         }
         let n = self.cfg.dock_items.len();
         self.cfg.dock_items.iter().position(|i| i.key() == key).map(|i| geo.dock_slot(i, n))
+    }
+
+    // ───────────────────────────── widget resize ─────────────────────────────
+
+    /// (page, index, col, row, w, h) of the widget being resized.
+    fn resize_target(&self) -> Option<(usize, usize, usize, usize, usize, usize)> {
+        let key = self.resize.as_ref()?;
+        for (pi, pg) in self.cfg.pages.iter().enumerate() {
+            for (i, pl) in pg.items.iter().enumerate() {
+                if pl.item.key() == *key {
+                    let (w, h) = pl.item.span(self.cfg.cols);
+                    return Some((pi, i, pl.col, pl.row, w.min(self.cfg.cols), h.min(self.cfg.rows)));
+                }
+            }
+        }
+        None
+    }
+
+    /// The four handle centres of the selected widget: left, top, right, bottom.
+    fn resize_handles(&self, geo: &Geo) -> Option<(Rect, [Pos2; 4])> {
+        let (pi, _, c, r, w, h) = self.resize_target()?;
+        if pi != self.page.round() as usize {
+            return None;
+        }
+        let rect = geo.cell_rect(c, r, w, h).shrink(3.0);
+        Some((rect, [rect.left_center(), rect.center_top(), rect.right_center(), rect.center_bottom()]))
+    }
+
+    fn resize_drag(&mut self, geo: &Geo, edge: u8, pos: Pos2) {
+        let Some((pi, idx, c, r, w, h)) = self.resize_target() else { return };
+        let (cols, rows) = (self.cfg.cols as i32, self.cfg.rows as i32);
+        let gx = ((pos.x - geo.grid.left()) / geo.cell.x).round() as i32;
+        let gy = ((pos.y - geo.grid.top()) / geo.cell.y).round() as i32;
+        let (mut nc, mut nr, mut nw, mut nh) = (c as i32, r as i32, w as i32, h as i32);
+        match edge {
+            0 => {
+                let left = gx.clamp(0, c as i32 + w as i32 - 1);
+                nw = c as i32 + w as i32 - left;
+                nc = left;
+            }
+            1 => {
+                let top = gy.clamp(0, r as i32 + h as i32 - 1);
+                nh = r as i32 + h as i32 - top;
+                nr = top;
+            }
+            2 => nw = (gx - c as i32).clamp(1, cols - c as i32),
+            _ => nh = (gy - r as i32).clamp(1, rows - r as i32),
+        }
+        if (nc, nr, nw, nh) == (c as i32, r as i32, w as i32, h as i32) {
+            return;
+        }
+        let key = self.resize.clone().unwrap_or_default();
+        if !self.cfg.fits(pi, nc as usize, nr as usize, nw as usize, nh as usize, Some(&key)) {
+            return;
+        }
+        let pl = &mut self.cfg.pages[pi].items[idx];
+        pl.col = nc as usize;
+        pl.row = nr as usize;
+        if let Item::AppWidget { w, h, .. } = &mut pl.item {
+            *w = nw as usize;
+            *h = nh as usize;
+        }
+        self.dirty = true;
+        self.haptic(Haptic::Tick);
+    }
+
+    fn paint_resize(&self, ctx: &Context, geo: &Geo) {
+        let handles = self.resize_handles(geo);
+        let pal = self.pal;
+        layer(ctx, "resize", 0, geo.screen, egui::emath::TSTransform::IDENTITY, if handles.is_some() { 1.0 } else { 0.0 }, |p| {
+            let Some((rect, hs)) = handles else { return };
+            p.rect_stroke(rect.expand(2.0), cr(self.cfg.widget_radius + 2.0), Stroke::new(2.5, pal.accent), StrokeKind::Outside);
+            for (i, c) in hs.iter().enumerate() {
+                let size = if i % 2 == 0 { vec2(8.0, 30.0) } else { vec2(30.0, 8.0) };
+                p.rect_filled(Rect::from_center_size(*c, size + vec2(4.0, 4.0)), cr(6.0), Color32::from_black_alpha(90));
+                p.rect_filled(Rect::from_center_size(*c, size), cr(4.0), pal.accent);
+            }
+        });
     }
 
     // ───────────────────────────── hit testing ─────────────────────────────
@@ -813,6 +1007,17 @@ impl Lumen {
             Touch::Idle => {
                 if pressed && !self.overlay_blocks_home() {
                     if let Some(pos) = pos {
+                        if let Some((_, hs)) = self.resize_handles(geo) {
+                            if let Some(e) = hs.iter().position(|c| (pos - *c).length() < 34.0) {
+                                self.touch = Touch::Resize(e as u8);
+                                self.haptic(Haptic::Lift);
+                                return;
+                            }
+                        }
+                        if self.resize.is_some() {
+                            // a press anywhere else ends the resizing
+                            self.resize = None;
+                        }
                         let hit = self.hit_at(geo, pos);
                         self.press_key = match (&hit, self.edit) {
                             (Hit::Item(k), false) => Some(k.clone()),
@@ -896,6 +1101,14 @@ impl Lumen {
                 }
             }
             Touch::Spent => {
+                if !down {
+                    self.touch = Touch::Idle;
+                }
+            }
+            Touch::Resize(edge) => {
+                if let Some(pos) = pos {
+                    self.resize_drag(geo, edge, pos);
+                }
                 if !down {
                     self.touch = Touch::Idle;
                 }
@@ -1198,7 +1411,16 @@ impl Lumen {
                     crate::bridge::bg(move || platform::uninstall(&p));
                 }
             }
-            Hover::Merge(key) => placed = self.merge_into(&key, &item),
+            Hover::Merge(key) => {
+                // the dragged icon flies into the folder
+                if let Some(r) = self.rect_of_key(geo, &key) {
+                    let to = self.key_icon_rect(geo, &key).unwrap_or(r);
+                    let size = self.cfg.eff();
+                    let from = Rect::from_center_size(d.pos - d.grab, vec2(size * 1.1, size * 1.1));
+                    self.ghosts.push(Ghost { item: item.clone(), from, to: Rect::from_center_size(to.center(), to.size() * 0.35), t: anim::Spring::at(0.0), icon_space: true });
+                }
+                placed = self.merge_into(&key, &item)
+            }
             Hover::Dock(idx) => {
                 if !matches!(item, Item::Widget { .. }) && self.cfg.dock_items.len() < self.cfg.dock_slots {
                     let at = idx.min(self.cfg.dock_items.len());

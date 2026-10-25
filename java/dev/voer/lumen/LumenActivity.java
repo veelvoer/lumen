@@ -28,6 +28,17 @@ public final class LumenActivity extends NativeActivity {
         if (i != null && i.hasCategory(Intent.CATEGORY_LAUNCHER) && !i.hasCategory(Intent.CATEGORY_HOME)) settingsRequested = true;
     }
 
+    /**
+     * Swiping Lumen away in the app switcher destroys the activity but leaves the process behind, and native code
+     * cannot start its window twice in one process: the next Home press showed a black screen. End the process so
+     * Android starts a clean one.
+     */
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        if (isFinishing()) android.os.Process.killProcess(android.os.Process.myPid());
+    }
+
     @Override
     protected void onStart() {
         super.onStart();

@@ -364,6 +364,35 @@ fn render_layers(env: &mut JNIEnv, px: i32, layers: &[&JObject], bounds: [i32; 4
     Ok(rgba)
 }
 
+/// Makes every pixel that differs from the layer's main color transparent. Premultiplied RGBA in and out.
+fn cutout(rgba: &mut [u8]) {
+    let mut hist = vec![0u32; 4096];
+    let rgb = |p: &[u8]| -> [f32; 3] {
+        let a = (p[3] as f32).max(1.0);
+        [(p[0] as f32 / a * 255.0).min(255.0), (p[1] as f32 / a * 255.0).min(255.0), (p[2] as f32 / a * 255.0).min(255.0)]
+    };
+    for p in rgba.chunks_exact(4) {
+        if p[3] > 200 {
+            let c = rgb(p);
+            hist[((c[0] as usize >> 4) << 8) | ((c[1] as usize >> 4) << 4) | (c[2] as usize >> 4)] += 1;
+        }
+    }
+    let (best, _) = hist.iter().enumerate().max_by_key(|(_, n)| **n).unwrap_or((0, &0));
+    let m = [((best >> 8) * 16 + 8) as f32, (((best >> 4) & 15) * 16 + 8) as f32, ((best & 15) * 16 + 8) as f32];
+    for p in rgba.chunks_exact_mut(4) {
+        let a = p[3] as f32 / 255.0;
+        if a <= 0.0 {
+            continue;
+        }
+        let c = rgb(p);
+        let d = ((c[0] - m[0]).powi(2) + (c[1] - m[1]).powi(2) + (c[2] - m[2]).powi(2)).sqrt() / 441.0;
+        let t = ((d - 0.08) / 0.2).clamp(0.0, 1.0);
+        let same = 1.0 - t * t * (3.0 - 2.0 * t);
+        let v = (a * same * 255.0) as u8;
+        p.copy_from_slice(&[v, v, v, v]);
+    }
+}
+
 fn alpha_only(rgba: &mut [u8]) {
     for px in rgba.chunks_exact_mut(4) {
         let al = px[3];
@@ -407,6 +436,17 @@ pub fn load_icon(a: &App, px: i32, want_mono: bool) -> Option<RawIcon> {
                     if cov > 0.04 && cov < 0.38 {
                         alpha_only(&mut sil);
                         return Ok(RawIcon { size: px as usize, rgba: sil, mono: true });
+                    }
+                    if cov >= 0.38 {
+                        // a big filled shape with details on it (YouTube: red box, white play button):
+                        // keep the shape and cut the details out of it, so they stay visible on the plate
+                        let mut cut = sil.clone();
+                        cutout(&mut cut);
+                        let c2 = coverage(&cut);
+                        if c2 > 0.06 && c2 < cov * 0.97 {
+                            alpha_only(&mut cut);
+                            return Ok(RawIcon { size: px as usize, rgba: cut, mono: true });
+                        }
                     }
                 }
             }

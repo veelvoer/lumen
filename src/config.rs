@@ -333,6 +333,14 @@ pub struct Config {
     pub auto_update: bool,
     pub last_check: u64,
     pub seeded: bool,
+    /// the layout was already adapted to a big screen once
+    pub adapted: bool,
+    /// a tablet: presets keep a bigger grid
+    pub big: bool,
+    /// the last version whose patch notes were shown
+    pub notes_seen: String,
+    /// which one-time setting updates were applied
+    pub migrated: u32,
 
     pub pages: Vec<Page>,
     pub dock_items: Vec<Item>,
@@ -399,7 +407,7 @@ impl Default for Config {
             drawer_opacity: 1.0,
             drawer_sort: Sort::Alphabetical,
             drawer_search: SearchPos::Auto,
-            drawer_scrubber: false,
+            drawer_scrubber: true,
             auto_add: false,
             long_press_empty: Action::Menu,
             pinch: Action::None,
@@ -409,6 +417,10 @@ impl Default for Config {
             auto_update: true,
             last_check: 0,
             seeded: false,
+            adapted: false,
+            big: false,
+            notes_seen: String::new(),
+            migrated: 0,
             pages: vec![Page::default()],
             dock_items: vec![],
             hidden: vec![],
@@ -491,7 +503,7 @@ impl Config {
                 self.label_size = 12.0;
                 self.label_shadow = true;
                 self.drawer_opacity = 0.92;
-                self.drawer_scrubber = false;
+                self.drawer_scrubber = true;
                 self.page_effect = PageEffect::Parallax;
                 self.launch_anim = LaunchAnim::Reveal;
                 self.long_press_empty = Action::Menu;
@@ -527,13 +539,21 @@ impl Config {
                 self.label_size = 11.5;
                 self.label_shadow = true;
                 self.drawer_opacity = 1.0;
-                self.drawer_scrubber = false;
+                self.drawer_scrubber = true;
                 self.page_effect = PageEffect::Slide;
                 self.launch_anim = LaunchAnim::Zoom;
                 self.long_press_empty = Action::Edit;
                 self.anim_style = AnimStyle::Auto;
             }
             Preset::Custom => return,
+        }
+        if self.big {
+            self.cols = 7;
+            self.rows = 5;
+            self.icon_size = self.icon_size.max(64.0);
+            self.dock_icon_size = self.dock_icon_size.max(64.0);
+            self.dock_slots = 6;
+            self.drawer_cols = 8;
         }
         self.dock_items.truncate(self.dock_slots);
         // swap the signature widgets
@@ -570,7 +590,12 @@ impl Config {
     }
 
     pub fn load(dir: &str) -> Config {
-        std::fs::read_to_string(Self::path(dir)).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+        let mut c: Config = std::fs::read_to_string(Self::path(dir)).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+        if c.migrated < 1 {
+            c.migrated = 1;
+            c.drawer_scrubber = true;
+        }
+        c
     }
 
     pub fn save(&self, dir: &str) {

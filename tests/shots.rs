@@ -281,3 +281,41 @@ fn small_and_odd_screens() {
         }
     }
 }
+
+#[test]
+fn tablet() {
+    for (p, pn) in [(Preset::Pixel, "pixel"), (Preset::Ios, "ios"), (Preset::Nothing, "nothing")] {
+        let mut h = make_sized(p, |_| {}, vec2(1280.0, 800.0), 1.5);
+        shot(&mut h, &format!("tablet-land-{pn}"));
+        lumen(&mut h).drawer_open = true;
+        settle(&mut h);
+        shot(&mut h, &format!("tablet-land-drawer-{pn}"));
+    }
+    let mut h = make_sized(Preset::Pixel, |_| {}, vec2(800.0, 1280.0), 1.5);
+    shot(&mut h, "tablet-port-pixel");
+}
+
+#[test]
+fn scrubber() {
+    let mut h = make(Preset::Pixel, |c| c.drawer_scrubber = true);
+    lumen(&mut h).drawer_open = true;
+    settle(&mut h);
+    touch_down(&h, Pos2::new(394.0, 300.0));
+    for _ in 0..4 {
+        h.step();
+    }
+    touch_move(&h, Pos2::new(394.0, 420.0));
+    for _ in 0..8 {
+        h.step();
+    }
+    shot(&mut h, "scrubber");
+    touch_up(&h, Pos2::new(394.0, 420.0));
+}
+
+#[test]
+fn whats_new() {
+    let mut h = make(Preset::Ios, |_| {});
+    lumen(&mut h).show_current_notes();
+    settle(&mut h);
+    shot(&mut h, "whats-new");
+}

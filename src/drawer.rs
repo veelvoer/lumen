@@ -254,6 +254,7 @@ impl Lumen {
                 self.scroller.jump_to(o.min(max_off));
             }
             let dt = ui.ctx().input(|i| i.stable_dt).clamp(0.001, 0.05);
+            self.scroller.exclude = if scrub { Some(Rect::from_min_max(pos2(right - 48.0, body.top()), pos2(right + 12.0, body.bottom()))) } else { None };
             self.scroller.update(ui.ctx(), body, max_off, !lifting && t > 0.98, dt);
             click_ok = click_ok && self.scroller.tap_ok();
             ui.scope_builder(UiBuilder::new().max_rect(body), |ui| {
@@ -368,18 +369,54 @@ impl Lumen {
                 }
             });
 
-            // letter scrubber on the right edge
+            // letter scrubber on the right edge. Under a finger the letters bulge out to the left like a wave
+            // (the way Niagara does it), a big bubble names the letter, and the list follows.
             if scrub {
                 let letters: Vec<char> = ('A'..='Z').chain(std::iter::once('#')).collect();
-                let strip = Rect::from_min_max(pos2(right - 22.0, body.top() + 8.0), pos2(right, body.bottom() - 8.0));
+                let strip = Rect::from_min_max(pos2(right - 20.0, body.top() + 8.0), pos2(right, body.bottom() - 8.0));
                 let step = strip.height() / letters.len() as f32;
-                let resp = ui.interact(strip.expand2(vec2(10.0, 0.0)), Id::new("scrub"), Sense::click_and_drag());
-                for (i, c) in letters.iter().enumerate() {
-                    ui.painter().text(pos2(strip.center().x, strip.top() + (i as f32 + 0.5) * step), Align2::CENTER_CENTER, c.to_string(), fonts::mono(10.5, false), pal.dim);
+                // raw pointer, like the scroller: a press that starts on the strip is ours until it ends
+                let zone = strip.expand2(vec2(26.0, 0.0));
+                let (pd, origin, latest) = ui.ctx().input(|i| (i.pointer.primary_down(), i.pointer.press_origin(), i.pointer.latest_pos()));
+                let down = pd && origin.is_some_and(|o| zone.contains(o)) && t > 0.9;
+                let fy = latest.map(|p| p.y).unwrap_or(strip.center().y);
+                let mut st = std::mem::take(&mut self.scrub);
+                st.act.target = if down { 1.0 } else { 0.0 };
+                if down {
+                    st.y.target = fy;
+                    if st.act.x < 0.05 {
+                        st.y.snap(fy);
+                    }
                 }
-                if let (true, Some(pos)) = (resp.dragged() || resp.clicked(), resp.interact_pointer_pos()) {
-                    let idx = (((pos.y - strip.top()) / step) as usize).min(letters.len() - 1);
-                    let letter = letters[idx];
+                let sdt = ui.ctx().input(|i| i.stable_dt).clamp(0.001, 0.05);
+                let mv = st.act.step(sdt, crate::anim::Tune { response: 0.22, damping: 0.8 }) | st.y.step(sdt, crate::anim::Tune { response: 0.12, damping: 1.0 });
+                if mv {
+                    ui.ctx().request_repaint();
+                }
+                let act = st.act.x.clamp(0.0, 1.0);
+                let cur = ((st.y.x - strip.top()) / step).floor().clamp(0.0, (letters.len() - 1) as f32) as usize;
+                let painter = ui.painter().clone();
+                for (i, c) in letters.iter().enumerate() {
+                    let cy = strip.top() + (i as f32 + 0.5) * step;
+                    let d = (cy - st.y.x) / (step * 3.0);
+                    let bump = (-d * d).exp() * act;
+                    let pos = pos2(strip.center().x - 58.0 * bump, cy);
+                    let hot = i == cur && act > 0.1;
+                    let col = if hot { pal.accent } else { pal.dim.gamma_multiply(1.0 - 0.35 * bump).to_opaque().gamma_multiply(0.55 + 0.45 * bump) };
+                    painter.text(pos, Align2::CENTER_CENTER, c.to_string(), fonts::body(&cfg, 10.5 + 13.0 * bump, hot), if hot { pal.accent } else { col });
+                }
+                if act > 0.02 {
+                    let letter = letters[cur];
+                    let c = pos2(strip.center().x - 112.0 * act, st.y.x);
+                    painter.circle_filled(c, 34.0 * act, pal.accent.gamma_multiply(act));
+                    painter.text(c, Align2::CENTER_CENTER, letter.to_string(), fonts::body(&cfg, 34.0 * act, true), pal.on_accent.gamma_multiply(act));
+                }
+                if down && st.last != Some(cur) {
+                    if st.last.is_some() {
+                        self.haptic(platform::Haptic::Tick);
+                    }
+                    st.last = Some(cur);
+                    let letter = letters[cur];
                     let at = visible.iter().position(|&i| {
                         let ch = self.apps[i].key.chars().next().unwrap_or('#');
                         if letter == '#' { !ch.is_alphabetic() } else { ch.to_ascii_uppercase() == letter }
@@ -390,9 +427,12 @@ impl Lumen {
                             DrawerStyle::Grid => (at / cfg.drawer_cols.max(3)) as f32 * (cfg.eff() + 40.0 * cfg.font_scale + 10.0),
                         };
                         self.drawer_scroll_to = Some(off);
-                        ui.ctx().request_repaint();
                     }
                 }
+                if !down {
+                    st.last = None;
+                }
+                self.scrub = st;
             }
 
             // pull down on the top edge closes it (Pixel/Nothing have no handle)

@@ -530,6 +530,7 @@ fn look_page(ui: &mut Ui, l: &mut Lumen, c: &mut Ctl) {
         }
     }
     section(ui, c, "Wallpaper");
+    switch_row(ui, c, "Paint the wallpaper in Lumen", "Makes coming back from an app instant instead of showing an empty screen for a moment. Needs wallpaper access and a normal picture; takes effect the next time Lumen starts.", &mut l.cfg.own_wallpaper);
     let shown = format!("{}%", (l.cfg.wallpaper_dim * 100.0) as i32);
     slider_row(ui, c, "Dim the wallpaper", &mut l.cfg.wallpaper_dim, 0.0..=0.8, shown);
     switch_row(ui, c, "Scroll the wallpaper with the pages", "", &mut l.cfg.wallpaper_scroll);

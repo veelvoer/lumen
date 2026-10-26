@@ -20,6 +20,7 @@ public final class LumenActivity extends NativeActivity {
 
     /** Live activities in this process. Native code cannot start its window twice in one process. */
     private static int alive = 0;
+    private boolean ownWallpaper = false;
     /** A window of this process was closed for good: its native side cannot be started again. */
     private static boolean destroyed = false;
 
@@ -31,6 +32,12 @@ public final class LumenActivity extends NativeActivity {
             android.os.Process.killProcess(android.os.Process.myPid());
         }
         alive++;
+        // Rust leaves this file when it can paint the wallpaper itself (see glass::Backdrop)
+        ownWallpaper = new java.io.File(getFilesDir(), "own-wallpaper").exists();
+        if (ownWallpaper) {
+            int theme = getResources().getIdentifier("Theme.Lumen.Opaque", "style", getPackageName());
+            if (theme != 0) setTheme(theme); else ownWallpaper = false;
+        }
         final java.io.File crashFile = new java.io.File(getFilesDir(), "last-crash.txt");
         final Thread.UncaughtExceptionHandler prev = Thread.getDefaultUncaughtExceptionHandler();
         Thread.setDefaultUncaughtExceptionHandler((t, e) -> {
@@ -45,7 +52,7 @@ public final class LumenActivity extends NativeActivity {
         });
         super.onCreate(b);
         // NativeActivity asks for an opaque RGB_565 window; the wallpaper can only show through a translucent one
-        getWindow().setFormat(android.graphics.PixelFormat.TRANSLUCENT);
+        if (!ownWallpaper) getWindow().setFormat(android.graphics.PixelFormat.TRANSLUCENT);
         Widgets.start(this);
         Intent i = getIntent();
         if (i != null && i.hasCategory(Intent.CATEGORY_LAUNCHER) && !i.hasCategory(Intent.CATEGORY_HOME)) settingsRequested = true;
@@ -62,14 +69,52 @@ public final class LumenActivity extends NativeActivity {
     }
 
     @Override
+    protected void onResume() {
+        super.onResume();
+        android.util.Log.i("lumen-life", "onResume");
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        android.util.Log.i("lumen-life", "onPause");
+    }
+
+    @Override
+    public void surfaceCreated(android.view.SurfaceHolder holder) {
+        android.util.Log.i("lumen-life", "surfaceCreated");
+        super.surfaceCreated(holder);
+    }
+
+    @Override
+    public void surfaceChanged(android.view.SurfaceHolder holder, int format, int w, int h) {
+        android.util.Log.i("lumen-life", "surfaceChanged " + w + "x" + h);
+        super.surfaceChanged(holder, format, w, h);
+    }
+
+    @Override
+    public void surfaceDestroyed(android.view.SurfaceHolder holder) {
+        android.util.Log.i("lumen-life", "surfaceDestroyed");
+        super.surfaceDestroyed(holder);
+    }
+
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        android.util.Log.i("lumen-life", "focus " + hasFocus);
+        super.onWindowFocusChanged(hasFocus);
+    }
+
+    @Override
     protected void onStart() {
         super.onStart();
+        android.util.Log.i("lumen-life", "onStart");
         Widgets.resume();
     }
 
     @Override
     protected void onStop() {
         super.onStop();
+        android.util.Log.i("lumen-life", "onStop");
         Widgets.stop();
     }
 

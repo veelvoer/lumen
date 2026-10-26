@@ -306,6 +306,8 @@ pub struct Config {
     pub real_glass: bool,
     /// the one-time tip about wallpaper access has been shown
     pub glass_hinted: bool,
+    /// Lumen paints the wallpaper itself (needs wallpaper access); makes returning from apps instant
+    pub own_wallpaper: bool,
     /// highest refresh rate to ask for; 0 = the screen's best. Lowered on its own when 120 Hz cannot be held.
     pub refresh_cap: f32,
     pub perf_mode: PerfMode,
@@ -399,6 +401,7 @@ impl Default for Config {
             haptics: true,
             real_glass: true,
             glass_hinted: false,
+            own_wallpaper: true,
             refresh_cap: 0.0,
             perf_mode: PerfMode::Auto,
             light_learned: false,

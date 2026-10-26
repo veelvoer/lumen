@@ -342,3 +342,84 @@ fn render(sm: &Small, w: usize, h: usize, rect: Rect, radius: f32, screen: Rect,
     }
     ColorImage { size: [w, h], source_size: vec2(w as f32, h as f32), pixels: px }
 }
+
+/// The wallpaper painted by Lumen itself, behind everything. With it the window can be opaque, and the system shows
+/// an opaque window the moment an app closes instead of keeping it hidden until the close animation ends.
+#[derive(Default)]
+pub struct Backdrop {
+    rx: Option<Receiver<(usize, usize, Vec<u8>, Small)>>,
+    sharp: Option<egui::TextureHandle>,
+    blur: Option<egui::TextureHandle>,
+    aspect: f32,
+    asked: bool,
+}
+
+impl Backdrop {
+    pub fn start(&mut self, ctx: &Context) {
+        if self.asked {
+            return;
+        }
+        self.asked = true;
+        let (tx, rx) = channel();
+        self.rx = Some(rx);
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            platform::background_thread();
+            match platform::wallpaper_image(2048) {
+                Ok((w, h, rgba)) => {
+                    let small = make_small(&rgba, w, h);
+                    let _ = tx.send((w, h, rgba, small));
+                }
+                Err(e) => log::info!("backdrop: wallpaper not readable: {e}"),
+            }
+            ctx.request_repaint();
+        });
+    }
+
+    pub fn poll(&mut self, ctx: &Context) {
+        let Some(rx) = &self.rx else { return };
+        if let Ok((w, h, rgba, small)) = rx.try_recv() {
+            let img = egui::ColorImage::from_rgba_unmultiplied([w, h], &rgba);
+            self.sharp = Some(ctx.load_texture("wallpaper", img, TextureOptions::LINEAR));
+            let b = egui::ColorImage::from_rgb([small.w, small.h], &small.blur);
+            self.blur = Some(ctx.load_texture("wallpaper-blur", b, TextureOptions::LINEAR));
+            self.aspect = w as f32 / h as f32;
+            self.rx = None;
+            ctx.request_repaint();
+        }
+    }
+
+    pub fn ready(&self) -> bool {
+        self.sharp.is_some()
+    }
+
+    /// `pan` 0..1 slides across a wide wallpaper with the pages; `blur` 0..1 fades to the frosted copy.
+    pub fn paint(&self, ctx: &Context, screen: Rect, pan: f32, blur: f32) {
+        let (Some(sharp), Some(soft)) = (&self.sharp, &self.blur) else { return };
+        let p = ctx.layer_painter(egui::LayerId::background());
+        let uv = uv_window(self.aspect, screen, pan);
+        p.image(sharp.id(), screen, uv, Color32::WHITE);
+        if blur > 0.004 {
+            p.image(soft.id(), screen, uv, Color32::WHITE.gamma_multiply(blur.min(1.0)));
+        }
+    }
+}
+
+/// Before the wallpaper is read (or if it cannot be): a gentle gradient in the wallpaper's own colors.
+pub fn paint_gradient(ctx: &Context, screen: Rect, colors: &[[u8; 3]]) {
+    let p = ctx.layer_painter(egui::LayerId::background());
+    let (a, b) = match colors {
+        [] => ([12, 12, 16], [4, 4, 8]),
+        [a] => (*a, *a),
+        [a, b, ..] => (*a, *b),
+    };
+    let dark = |c: [u8; 3], k: f32| Color32::from_rgb((c[0] as f32 * k) as u8, (c[1] as f32 * k) as u8, (c[2] as f32 * k) as u8);
+    let mut m = egui::Mesh::default();
+    m.colored_vertex(screen.left_top(), dark(a, 0.55));
+    m.colored_vertex(screen.right_top(), dark(a, 0.55));
+    m.colored_vertex(screen.left_bottom(), dark(b, 0.25));
+    m.colored_vertex(screen.right_bottom(), dark(b, 0.25));
+    m.add_triangle(0, 1, 2);
+    m.add_triangle(1, 3, 2);
+    p.add(egui::Shape::mesh(m));
+}

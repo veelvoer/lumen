@@ -12,4 +12,11 @@
         <item name="android:enforceNavigationBarContrast">false</item>
         <item name="android:enforceStatusBarContrast">false</item>
     </style>
+    <!-- Lumen draws the wallpaper itself: an opaque window is shown by the system the instant an app closes, instead
+         of staying hidden until the close animation ends. -->
+    <style name="Theme.Lumen.Opaque" parent="Theme.Lumen">
+        <item name="android:windowShowWallpaper">false</item>
+        <item name="android:windowBackground">@android:color/black</item>
+        <item name="android:windowIsTranslucent">false</item>
+    </style>
 </resources>

@@ -154,6 +154,11 @@ pub struct Lumen {
     pub phone_colors: Option<Dynamic>,
     pub font_scripts: u8,
     pub glass: crate::glass::Glass,
+    pub backdrop: crate::glass::Backdrop,
+    /// the window runs opaque and Lumen paints the wallpaper (decided at start, see LumenActivity)
+    pub own_wall: bool,
+    wall_colors: Vec<[u8; 3]>,
+    back_blur: f32,
     pub wallpaper_access: bool,
     pub wallpaper_live: bool,
     probed: bool,
@@ -281,6 +286,10 @@ impl Lumen {
             phone_colors,
             font_scripts: 0,
             glass: Default::default(),
+            backdrop: Default::default(),
+            own_wall: std::path::Path::new(&dir).join("own-wallpaper").exists(),
+            wall_colors: vec![],
+            back_blur: 0.0,
             wallpaper_access: false,
             wallpaper_live: false,
             probed: false,
@@ -541,6 +550,7 @@ impl Lumen {
             self.wallpaper_access = snap.wallpaper_access;
             self.wallpaper_live = snap.wallpaper_live;
             crate::glass::set_colors(&snap.wallpaper_colors);
+            self.wall_colors = snap.wallpaper_colors.clone();
         }
         if snap.battery.is_some() && self.cfg.preset == Preset::Ios && self.cfg.real_glass && !self.wallpaper_access && !self.wallpaper_live && !self.cfg.glass_hinted && self.whats_new.is_none() {
             self.cfg.glass_hinted = true;
@@ -548,6 +558,18 @@ impl Lumen {
             self.toast(ctx, "Frosted dock: allow wallpaper access in Settings > Look");
         }
         // real Liquid Glass needs the wallpaper: only when allowed, not live, and the phone can afford it
+        // Lumen paints the wallpaper itself when it may read it: then the window can be opaque (smooth returns from apps)
+        let want_wall = self.cfg.own_wallpaper && self.wallpaper_access && !self.wallpaper_live && snap.battery.is_some();
+        if want_wall {
+            self.backdrop.start(ctx);
+            self.backdrop.poll(ctx);
+        }
+        let flag = std::path::Path::new(&self.dir).join("own-wallpaper");
+        if want_wall && self.backdrop.ready() && !flag.exists() {
+            let _ = std::fs::write(&flag, b"1");
+        } else if snap.battery.is_some() && !want_wall && flag.exists() {
+            let _ = std::fs::remove_file(&flag);
+        }
         let want_glass = self.cfg.real_glass && !self.light && self.wallpaper_access && !self.wallpaper_live;
         if want_glass {
             self.glass.start(ctx);
@@ -629,6 +651,7 @@ impl Lumen {
         let k = ctx.pixels_per_point();
         let lib_amount = if self.cfg.app_library { (self.page - (self.cfg.pages.len() as f32 - 1.0)).clamp(0.0, 1.0) } else { 0.0 };
         let amount = self.drawer.clamp(0.0, 1.0).max(self.folder_t.clamp(0.0, 1.0) * 0.7).max(lib_amount * 0.8).max(if self.screen == Screen::Settings { self.screen_t.x.clamp(0.0, 1.0) } else { 0.0 });
+        self.back_blur = if self.light { 0.0 } else { (amount * self.cfg.blur).clamp(0.0, 1.0) };
         let px = if self.light { 0 } else { ((amount * self.cfg.blur * 28.0 * k) / 4.0).round() as i32 * 4 };
         if px != self.last_blur {
             self.last_blur = px;
@@ -937,6 +960,16 @@ impl Lumen {
         {
             let _s = crate::perf::span(crate::perf::Sec::Tick);
             self.tick(&ctx);
+            if self.own_wall {
+                let screen = ctx.content_rect();
+                let n = self.page_count().max(2) as f32 - 1.0;
+                let pan = if self.cfg.wallpaper_scroll { (self.page / n).clamp(0.0, 1.0) } else { 0.5 };
+                if self.backdrop.ready() {
+                    self.backdrop.paint(&ctx, screen, pan, self.back_blur);
+                } else {
+                    crate::glass::paint_gradient(&ctx, screen, &self.wall_colors);
+                }
+            }
         }
         let dt = ctx.input(|i| i.stable_dt).clamp(0.001, 0.05);
         self.screen_t.target = if self.screen == Screen::Settings { 1.0 } else { 0.0 };
@@ -960,6 +993,9 @@ impl Lumen {
     /// Writes one line a second to the log when frames were slow, so jank can be found on a real phone.
     fn log_frame_times(&mut self, ctx: &Context) {
         let dt = ctx.input(|i| i.unstable_dt);
+        if dt > 0.25 && dt < 30.0 {
+            log::info!("first frame after a {:.0} ms gap", dt * 1000.0);
+        }
         self.perf.frame(dt, self.frame_budget);
         // the first seconds after coming back from an app are the system's animation, not ours to judge
         let calm = ctx.input(|i| i.time) - self.focus_t > 3.0;

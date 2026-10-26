@@ -20,6 +20,29 @@ public final class LumenActivity extends NativeActivity {
 
     /** Live activities in this process. Native code cannot start its window twice in one process. */
     private static int alive = 0;
+    private static android.graphics.drawable.Drawable windowBg;
+
+    /**
+     * The opaque window shows its background the instant it appears, before Lumen has drawn a frame. A black one
+     * flashes black; the wallpaper (cropped like Lumen draws it at the first page) makes that moment invisible.
+     */
+    private void applyWindowBackground() {
+        try {
+            if (windowBg == null) {
+                android.graphics.Bitmap w = Glue.wallpaper(this, 1280);
+                if (w == null) return;
+                android.util.DisplayMetrics dm = getResources().getDisplayMetrics();
+                float sa = (float) dm.widthPixels / dm.heightPixels, wa = (float) w.getWidth() / w.getHeight();
+                int cw, ch, x0 = 0, y0 = 0;
+                if (wa > sa) { ch = w.getHeight(); cw = Math.round(ch * sa); }
+                else { cw = w.getWidth(); ch = Math.round(cw / sa); y0 = (w.getHeight() - ch) / 2; }
+                cw = Math.max(1, Math.min(cw, w.getWidth()));
+                ch = Math.max(1, Math.min(ch, w.getHeight() - y0));
+                windowBg = new android.graphics.drawable.BitmapDrawable(getResources(), android.graphics.Bitmap.createBitmap(w, x0, y0, cw, ch));
+            }
+            getWindow().setBackgroundDrawable(windowBg);
+        } catch (Throwable ignored) {}
+    }
     private boolean ownWallpaper = false;
     /** A window of this process was closed for good: its native side cannot be started again. */
     private static boolean destroyed = false;
@@ -75,6 +98,7 @@ public final class LumenActivity extends NativeActivity {
         super.onCreate(b);
         // NativeActivity asks for an opaque RGB_565 window; the wallpaper can only show through a translucent one
         if (!ownWallpaper) getWindow().setFormat(android.graphics.PixelFormat.TRANSLUCENT);
+        else applyWindowBackground();
         Widgets.start(this);
         Intent i = getIntent();
         if (i != null && i.hasCategory(Intent.CATEGORY_LAUNCHER) && !i.hasCategory(Intent.CATEGORY_HOME)) settingsRequested = true;

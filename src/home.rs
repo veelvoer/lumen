@@ -201,10 +201,10 @@ impl Lumen {
             if self.search_open || self.search_t.x > 0.01 {
                 self.search_ui(ctx, screen);
             }
-            if self.menu.is_some() {
+            if self.menu.is_some() || self.menu_t.x > 0.02 {
                 self.menu_ui(ctx, screen);
             }
-            if self.widget_picker {
+            if self.widget_picker || self.picker_t.x > 0.01 {
                 self.widget_picker_ui(ctx, screen);
             }
             if self.dialog.is_some() {
@@ -296,6 +296,10 @@ impl Lumen {
         if !matches!(self.touch, Touch::LibraryScroll) {
             busy |= self.lib_scroller.step(dt, self.lib_max);
         }
+        self.dialog_t.target = if self.dialog.is_some() { 1.0 } else { 0.0 };
+        busy |= self.dialog_t.step(dt, f.popup);
+        self.picker_t.target = if self.widget_picker { 1.0 } else { 0.0 };
+        busy |= self.picker_t.step(dt, f.popup);
         self.notes_t.target = if self.whats_new.is_some() { 1.0 } else { 0.0 };
         busy |= self.notes_t.step(dt, f.popup);
         for g in self.ghosts.iter_mut() {

@@ -90,7 +90,12 @@ impl Lumen {
     }
 
     pub fn menu_ui(&mut self, ctx: &Context, screen: Rect) {
-        let Some(menu) = self.menu.clone() else { return };
+        // the menu springs closed from where it was: keep the last one while it shrinks away
+        let open = self.menu.is_some();
+        if open {
+            self.menu_last = self.menu.clone();
+        }
+        let Some(menu) = self.menu.clone().or_else(|| self.menu_last.clone()) else { return };
         let pal = self.pal;
         let cfg = self.cfg.clone();
         let ios = cfg.preset == Preset::Ios;
@@ -100,8 +105,8 @@ impl Lumen {
         let mut act: Option<Act> = None;
 
         // A tap anywhere else closes it. While the finger is still down after a long press the drag takes over.
-        let bg = Area::new(Id::new("menu-bg")).order(Order::Tooltip).fixed_pos(screen.min).show(ctx, |ui| ui.allocate_rect(screen, Sense::click()));
-        let lifted = matches!(self.touch, Touch::Lifted { .. } | Touch::Drag(_));
+        let bg = Area::new(Id::new("menu-bg")).order(Order::Tooltip).fixed_pos(screen.min).interactable(open).show(ctx, |ui| ui.allocate_rect(screen, Sense::click()));
+        let lifted = matches!(self.touch, Touch::Lifted { .. } | Touch::Drag(_)) || !open;
         if bg.inner.clicked() && !lifted && ctx.input(|i| i.time) > self.suppress_click {
             close = true;
         }
@@ -261,12 +266,19 @@ impl Lumen {
         };
         let mut save = false;
         let mut cancel = false;
+        let dt_ = self.dialog_t.x.clamp(0.0, 1.0);
         Area::new(Id::new("dialog-bg")).order(Order::Tooltip).fixed_pos(screen.min).show(ctx, |ui| {
-            ui.painter().rect_filled(screen, 0, Color32::from_black_alpha(140));
+            ui.painter().rect_filled(screen, 0, Color32::from_black_alpha((140.0 * dt_) as u8));
             ui.allocate_rect(screen, Sense::click_and_drag());
         });
         let w = (screen.width() - 56.0).min(360.0);
-        Area::new(Id::new("dialog")).order(Order::Tooltip).fixed_pos(pos2(screen.center().x - w / 2.0, screen.top() + screen.height() * 0.22)).show(ctx, |ui| {
+        // pops in from the middle of where it will sit: a little scale and a fade on the dialog spring
+        let top_left = pos2(screen.center().x - w / 2.0, screen.top() + screen.height() * 0.22);
+        let sc = 0.9 + 0.1 * self.dialog_t.x.clamp(0.0, 1.05);
+        let pivot = top_left + vec2(w / 2.0, 90.0);
+        ctx.set_transform_layer(egui::LayerId::new(Order::Tooltip, Id::new("dialog")), egui::emath::TSTransform::new(pivot.to_vec2() * (1.0 - sc), sc));
+        Area::new(Id::new("dialog")).order(Order::Tooltip).fixed_pos(top_left).show(ctx, |ui| {
+            ui.set_opacity(dt_);
             Frame::NONE.fill(pal.menu_bg).corner_radius(cr(28.0)).inner_margin(22).show(ui, |ui| {
                 ui.set_width(w - 44.0);
                 ui.label(egui::RichText::new(title).font(fonts::body(&cfg, 20.0, true)).color(pal.text));
@@ -348,10 +360,16 @@ impl Lumen {
         let k = ctx.pixels_per_point();
         let it = self.insets.top / k;
         let ib = self.insets.bottom / k;
+        // the sheet rises from the bottom on a spring and sinks back; the dimming fades on its own layer
+        let pt = self.picker_t.x.clamp(0.0, 1.0);
+        let open = self.widget_picker;
+        Area::new(Id::new("widgets-dim")).order(Order::Foreground).fixed_pos(screen.min).interactable(false).show(ctx, |ui| {
+            ui.painter().rect_filled(screen, 0, Color32::from_black_alpha((120.0 * pt) as u8));
+        });
+        ctx.set_transform_layer(egui::LayerId::new(Order::Foreground, Id::new("widgets")), egui::emath::TSTransform::from_translation(vec2(0.0, (1.0 - self.picker_t.x) * screen.height() * 0.7)));
         Area::new(Id::new("widgets")).order(Order::Foreground).fixed_pos(screen.min).show(ctx, |ui| {
-            ui.painter().rect_filled(screen, 0, Color32::from_black_alpha(120));
             let sheet = Rect::from_min_max(pos2(screen.left(), screen.top() + it + 60.0), screen.max);
-            if ui.interact(Rect::from_min_max(screen.min, pos2(screen.right(), sheet.top())), Id::new("widgets-bg"), Sense::click()).clicked() {
+            if open && ui.interact(Rect::from_min_max(screen.min, pos2(screen.right(), sheet.top())), Id::new("widgets-bg"), Sense::click()).clicked() {
                 close = true;
             }
             ui.painter().rect_filled(sheet, egui::CornerRadius { nw: 28, ne: 28, sw: 0, se: 0 }, pal.sheet);
@@ -431,6 +449,10 @@ impl Lumen {
         if let Some(t) = new_tab {
             self.picker_tab = t;
             self.picker_scroller.reset();
+        }
+        if !open {
+            add = None;
+            add_provider = None;
         }
         if let Some(p) = add_provider {
             self.aw.borrow().add(p);
@@ -520,12 +542,22 @@ impl Lumen {
         let cfg = self.cfg.clone();
         let k = ctx.pixels_per_point();
         let ib = self.insets.bottom / k;
-        Area::new(Id::new("toast")).order(Order::Tooltip).fixed_pos(pos2(screen.center().x, screen.bottom() - ib - 120.0)).pivot(Align2::CENTER_CENTER).show(ctx, |ui| {
+        // slides up and fades in over a quarter second, fades out over the last third
+        let age = (now - (until - 2.2)) as f32;
+        let left = (until - now) as f32;
+        let ease = |x: f32| { let x = x.clamp(0.0, 1.0); 1.0 - (1.0 - x).powi(3) };
+        let (vis, rise) = (ease(age / 0.25).min((left / 0.3).clamp(0.0, 1.0)), (1.0 - ease(age / 0.3)) * 18.0);
+        Area::new(Id::new("toast")).order(Order::Tooltip).fixed_pos(pos2(screen.center().x, screen.bottom() - ib - 120.0 + rise)).pivot(Align2::CENTER_CENTER).show(ctx, |ui| {
+            ui.set_opacity(vis);
             Frame::NONE.fill(Color32::from_black_alpha(220)).corner_radius(cr(22.0)).inner_margin(egui::Margin::symmetric(18, 12)).show(ui, |ui| {
                 ui.label(egui::RichText::new(text).font(fonts::body(&cfg, 14.5, false)).color(Color32::WHITE));
             });
         });
         let _ = pal;
-        ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        if age < 0.4 || left < 0.35 {
+            ctx.request_repaint();
+        } else {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
     }
 }

@@ -614,6 +614,11 @@ impl Lumen {
         let focused = ctx.input(|i| i.focused);
         if focused && !self.was_focused {
             self.focus_t = ctx.input(|i| i.time);
+            if self.auto_cap > 0.0 {
+                // every visit starts at the screen's best again
+                self.auto_cap = 0.0;
+                platform::set_refresh_cap(self.cfg.refresh_cap);
+            }
             // coming back from an app: look for installed or removed apps, but not more than every 30 seconds and without hurry
             if !self.scan_pending && self.last_scan.elapsed() > std::time::Duration::from_secs(30) {
                 self.scan_pending = true;
@@ -1010,8 +1015,9 @@ impl Lumen {
             }
             if self.win.0 >= 240 {
                 let hz = 1.0 / self.frame_budget.max(0.001);
-                if self.win.1 * 100 / self.win.0 >= 10 && hz > 80.0 && self.cfg.refresh_cap != 120.0 {
-                    let cap = if hz > 100.0 { 90.0 } else { 60.0 };
+                // 120 -> 90 at most: below 90 the screen itself looks choppier than the odd missed frame
+                if self.win.1 * 100 / self.win.0 >= 20 && hz > 100.0 && self.cfg.refresh_cap != 120.0 {
+                    let cap = 90.0;
                     // only for this session: a bad moment must not lower the screen for good
                     self.auto_cap = cap;
                     platform::set_refresh_cap(if self.cfg.refresh_cap > 0.0 { self.cfg.refresh_cap.min(cap) } else { cap });

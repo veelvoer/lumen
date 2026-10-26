@@ -356,6 +356,9 @@ impl Lumen {
         self.aw.borrow_mut().load_providers();
         let aw_rc = self.aw.clone();
         let providers: Vec<crate::platform::WidgetProvider> = aw_rc.borrow().providers.clone().unwrap_or_default();
+        let mut open_pkgs = std::mem::take(&mut self.picker_open);
+        let mut picker_icons = self.icons.take();
+        let picker_apps: std::collections::HashMap<String, crate::platform::App> = providers.iter().filter_map(|p| self.app(&p.pkg).map(|a| (p.pkg.clone(), a.clone()))).collect();
         let app_names: std::collections::HashMap<String, String> = providers.iter().filter_map(|p| self.app(&p.pkg).map(|a| (p.pkg.clone(), a.label.clone()))).collect();
         let k = ctx.pixels_per_point();
         let it = self.insets.top / k;
@@ -412,40 +415,72 @@ impl Lumen {
                         ui.label(egui::RichText::new("Looking…").font(fonts::body(&cfg, 14.0, false)).color(pal.dim));
                     }
                     let aw = aw_rc.borrow();
-                    let mut last_pkg = String::new();
-                    for p in providers.iter().filter(|_| tab == 1) {
-                        if p.pkg != last_pkg {
-                            last_pkg = p.pkg.clone();
-                            ui.add_space(14.0);
-                            let name = app_names.get(&p.pkg).cloned().unwrap_or_else(|| p.pkg.clone());
-                            ui.label(egui::RichText::new(name).font(fonts::body(&cfg, 14.0, true)).color(pal.dim));
+                    // one drop-down per app: its icon and name, tap to show that app's widgets
+                    let mut i = 0;
+                    while tab == 1 && i < providers.len() {
+                        let pkg = providers[i].pkg.clone();
+                        let mut j = i;
+                        while j < providers.len() && providers[j].pkg == pkg {
+                            j += 1;
                         }
-                        let (cw, ch) = p.cells();
-                        let w = ui.available_width();
-                        let (row, resp) = ui.allocate_exact_size(vec2(w, 120.0), Sense::click());
-                        let painter = ui.painter_at(row);
-                        painter.rect_filled(row, cr(20.0), pal.card);
-                        if let Some((tex, size)) = aw.preview(p) {
-                            let maxw = 150.0f32;
-                            let maxh = 96.0f32;
-                            let s = (maxw / size[0] as f32).min(maxh / size[1] as f32).min(1.2);
-                            let isz = vec2(size[0] as f32 * s, size[1] as f32 * s);
-                            let ir = Rect::from_center_size(pos2(row.left() + 16.0 + maxw / 2.0, row.center().y), isz);
-                            painter.image(tex, ir, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
-                        }
-                        let tx = row.left() + 16.0 + 150.0 + 16.0;
-                        painter.text(pos2(tx, row.center().y - 12.0), Align2::LEFT_CENTER, widgets::fit(&painter, &p.label, &fonts::body(&cfg, 16.0, false), row.right() - tx - 12.0), fonts::body(&cfg, 16.0, false), pal.text);
-                        painter.text(pos2(tx, row.center().y + 12.0), Align2::LEFT_CENTER, format!("{cw} x {ch}"), fonts::body(&cfg, 13.0, false), pal.dim);
-                        if resp.clicked() {
-                            add_provider = Some(p.clone());
-                        }
+                        let group = &providers[i..j];
+                        i = j;
+                        let name = app_names.get(&pkg).cloned().unwrap_or_else(|| pkg.clone());
+                        let is_open = open_pkgs.contains(&pkg);
                         ui.add_space(8.0);
+                        let (head, hresp) = ui.allocate_exact_size(vec2(ui.available_width(), 64.0), Sense::click());
+                        let painter = ui.painter_at(head);
+                        painter.rect_filled(head, cr(20.0), pal.card);
+                        let icon_r = Rect::from_center_size(pos2(head.left() + 16.0 + 22.0, head.center().y), vec2(44.0, 44.0));
+                        match (picker_apps.get(&pkg), picker_icons.as_mut()) {
+                            (Some(app), Some(ic)) => widgets::app_icon(&painter, icon_r, app, ic, &cfg, &pal, 1.0, 0.0, 1.0),
+                            _ => { painter.rect_filled(icon_r, cr(12.0), pal.dim.gamma_multiply(0.3)); }
+                        }
+                        let tx = icon_r.right() + 14.0;
+                        painter.text(pos2(tx, head.center().y - 9.0), Align2::LEFT_CENTER, widgets::fit(&painter, &name, &fonts::body(&cfg, 16.5, true), head.right() - tx - 56.0), fonts::body(&cfg, 16.5, true), pal.text);
+                        painter.text(pos2(tx, head.center().y + 13.0), Align2::LEFT_CENTER, format!("{} widget{}", group.len(), if group.len() == 1 { "" } else { "s" }), fonts::body(&cfg, 12.5, false), pal.dim);
+                        widgets::glyph_at(&painter, pos2(head.right() - 28.0, head.center().y), Align2::CENTER_CENTER, if is_open { ph::CARET_UP } else { ph::CARET_DOWN }, 20.0, pal.dim);
+                        if hresp.clicked() {
+                            if is_open {
+                                open_pkgs.remove(&pkg);
+                            } else {
+                                open_pkgs.insert(pkg.clone());
+                            }
+                        }
+                        if !is_open {
+                            continue;
+                        }
+                        for p in group {
+                            let (cw, ch) = p.cells();
+                            let w = ui.available_width() - 12.0;
+                            ui.add_space(6.0);
+                            let (row, resp) = ui.allocate_exact_size(vec2(w, 120.0), Sense::click());
+                            let row = row.translate(vec2(12.0, 0.0));
+                            let painter = ui.painter_at(row);
+                            painter.rect_filled(row, cr(20.0), pal.card.gamma_multiply(0.7));
+                            if let Some((tex, size)) = aw.preview(p) {
+                                let maxw = 150.0f32;
+                                let maxh = 96.0f32;
+                                let s = (maxw / size[0] as f32).min(maxh / size[1] as f32).min(1.2);
+                                let isz = vec2(size[0] as f32 * s, size[1] as f32 * s);
+                                let ir = Rect::from_center_size(pos2(row.left() + 16.0 + maxw / 2.0, row.center().y), isz);
+                                painter.image(tex, ir, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+                            }
+                            let tx = row.left() + 16.0 + 150.0 + 16.0;
+                            painter.text(pos2(tx, row.center().y - 12.0), Align2::LEFT_CENTER, widgets::fit(&painter, &p.label, &fonts::body(&cfg, 16.0, false), row.right() - tx - 12.0), fonts::body(&cfg, 16.0, false), pal.text);
+                            painter.text(pos2(tx, row.center().y + 12.0), Align2::LEFT_CENTER, format!("{cw} x {ch}"), fonts::body(&cfg, 13.0, false), pal.dim);
+                            if resp.clicked() {
+                                add_provider = Some(p.clone());
+                            }
+                        }
                     }
                     ui.add_space(30.0);
                 });
             });
         });
         self.picker_scroller = picker_sc;
+        self.picker_open = open_pkgs;
+        self.icons = picker_icons;
         if let Some(t) = new_tab {
             self.picker_tab = t;
             self.picker_scroller.reset();

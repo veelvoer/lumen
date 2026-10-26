@@ -24,12 +24,34 @@ public final class LumenActivity extends NativeActivity {
     /** A window of this process was closed for good: its native side cannot be started again. */
     private static boolean destroyed = false;
 
+    /**
+     * Ends this process and asks for a fresh home screen a moment later, so the user sees one quick restart
+     * instead of whatever Android shows when the home app dies. Also notes it for the report.
+     */
+    private void restartCleanly() {
+        try {
+            java.io.FileWriter w = new java.io.FileWriter(new java.io.File(getFilesDir(), "last-restart.txt"));
+            w.write(new java.text.SimpleDateFormat("MM-dd HH:mm:ss", java.util.Locale.US).format(new java.util.Date()) + " stale window, restarted");
+            w.close();
+        } catch (Throwable ignored) {}
+        try {
+            Intent home = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME).setPackage(getPackageName()).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            android.os.Bundle opts = null;
+            if (android.os.Build.VERSION.SDK_INT >= 34) {
+                opts = android.app.ActivityOptions.makeBasic().setPendingIntentCreatorBackgroundActivityStartMode(android.app.ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED).toBundle();
+            }
+            android.app.PendingIntent pi = android.app.PendingIntent.getActivity(this, 7, home, android.app.PendingIntent.FLAG_UPDATE_CURRENT | android.app.PendingIntent.FLAG_IMMUTABLE, opts);
+            ((android.app.AlarmManager) getSystemService(ALARM_SERVICE)).set(android.app.AlarmManager.RTC, System.currentTimeMillis() + 300, pi);
+        } catch (Throwable ignored) {}
+        android.os.Process.killProcess(android.os.Process.myPid());
+    }
+
     @Override
     protected void onCreate(Bundle b) {
         if (alive > 0 || destroyed) {
             // Android started a new window before the old one was gone (apps were cleared, then Home): the native
             // side of the old one is still in this process. End it; Android starts a clean process right away.
-            android.os.Process.killProcess(android.os.Process.myPid());
+            restartCleanly();
         }
         alive++;
         // Rust leaves this file when it can paint the wallpaper itself (see glass::Backdrop)

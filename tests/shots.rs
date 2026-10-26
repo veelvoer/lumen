@@ -506,3 +506,12 @@ fn long_press_on_empty_space_in_ios() {
     println!("menu: {:?}, edit: {}, action {:?}", l.menu.as_ref().map(|m| format!("{:?}", m.target)), l.edit, l.cfg.long_press_empty);
     shot(&mut h, "ios-empty-longpress");
 }
+
+#[test]
+fn widget_dropdowns() {
+    let mut h = make(Preset::Pixel, |_| {});
+    lumen(&mut h).widget_picker = true;
+    lumen(&mut h).picker_open.insert("com.example.notes".into());
+    settle(&mut h);
+    shot(&mut h, "widget-dropdowns");
+}

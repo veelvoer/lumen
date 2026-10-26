@@ -238,6 +238,7 @@ pub struct Lumen {
     pub search_t: Spring,
     pub search_from: Option<Rect>,
     pub picker_tab: u8,
+    pub picker_open: std::collections::HashSet<String>,
     pub search_open: bool,
     pub query: String,
     pub focus_search: bool,
@@ -361,6 +362,7 @@ impl Lumen {
             search_t: Spring::at(0.0),
             search_from: None,
             picker_tab: 1,
+            picker_open: Default::default(),
             search_open: false,
             query: String::new(),
             focus_search: false,
@@ -1071,7 +1073,7 @@ impl Lumen {
         let r = ctx.content_rect();
         let k = ctx.pixels_per_point();
         format!(
-            "Lumen {}\nDevice: {} {} (Android API {})\nMemory: {} MB{}, {} cores\nScreen: {:.0}x{:.0} px, density {:.2}, {:.0} Hz\nGraphics: {}\nMode: {:?}, light is {}{}\nWallpaper: {}\nFrame time while moving: {:.1} ms (budget {:.1} ms)\nApps: {}, icons loaded {} ({} px, {} atlas pages)\nPreset: {:?}, grid {}x{}, pages {}\nCrashes and kills: {}\nLast crash: {}",
+            "Lumen {}\nDevice: {} {} (Android API {})\nMemory: {} MB{}, {} cores\nScreen: {:.0}x{:.0} px, density {:.2}, {:.0} Hz\nGraphics: {}\nMode: {:?}, light is {}{}\nWallpaper: {}\nFrame time while moving: {:.1} ms (budget {:.1} ms)\nApps: {}, icons loaded {} ({} px, {} atlas pages)\nPreset: {:?}, grid {}x{}, pages {}\nCrashes and kills: {}\nLast crash: {}\nLast restart: {}",
             self.version,
             self.device.manufacturer,
             self.device.model,
@@ -1107,6 +1109,7 @@ impl Lumen {
                 let c = last_crash();
                 if c.trim().is_empty() { "none".to_string() } else { format!("\n{}", c.trim_end()) }
             },
+            FILES_DIR.get().and_then(|d| std::fs::read_to_string(std::path::Path::new(d).join("last-restart.txt")).ok()).unwrap_or_else(|| "none".into()),
         )
     }
 

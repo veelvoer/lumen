@@ -1,7 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <!-- See-through window: the system wallpaper shows behind the launcher. -->
+    <!-- When an app closes and Lumen is revealed, the system fades its window in; that left a bare wallpaper behind the
+         shrinking app for half a second. These make Lumen visible straight away. -->
+    <style name="Anim.Lumen" parent="@android:style/Animation.Activity">
+        <item name="android:activityCloseEnterAnimation">@anim/lumen_stay</item>
+        <item name="android:taskCloseEnterAnimation">@anim/lumen_stay</item>
+        <item name="android:taskToFrontEnterAnimation">@anim/lumen_stay</item>
+        <item name="android:activityOpenEnterAnimation">@anim/lumen_stay</item>
+        <item name="android:taskOpenEnterAnimation">@anim/lumen_stay</item>
+    </style>
+
     <style name="Theme.Lumen" parent="@android:style/Theme.DeviceDefault.NoActionBar">
+        <item name="android:windowAnimationStyle">@style/Anim.Lumen</item>
         <item name="android:windowShowWallpaper">true</item>
         <item name="android:windowBackground">@android:color/transparent</item>
         <item name="android:windowIsTranslucent">true</item>

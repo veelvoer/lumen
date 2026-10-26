@@ -170,9 +170,137 @@ public final class LumenActivity extends NativeActivity {
         Widgets.onActivityResult(requestCode, resultCode, data);
     }
 
+    /**
+     * The home gesture (swipe up from an app): the system's recents component sends us the closing app and a reply
+     * channel and shrinks the app toward whatever rectangle we answer with. Telling it where the app's icon is on
+     * our home screen turns a pill over a bare wallpaper into the app flying into its icon.
+     */
+    private android.view.SurfaceView floatingIcon;
+
+    private void dropFloatingIcon() {
+        try {
+            if (floatingIcon != null && floatingIcon.getParent() instanceof android.view.ViewGroup) ((android.view.ViewGroup) floatingIcon.getParent()).removeView(floatingIcon);
+        } catch (Throwable ignored) {}
+        floatingIcon = null;
+    }
+
+    @Override
+    public void onEnterAnimationComplete() {
+        super.onEnterAnimationComplete();
+        android.util.Log.i("lumen-life", "enterAnimationComplete");
+    }
+
+    /** The app's icon, masked like Lumen masks it, w by h pixels. */
+    private android.graphics.Bitmap iconFor(android.content.ComponentName cn, int w, int h, String shape, float radius) {
+        try {
+            android.graphics.drawable.Drawable d = getPackageManager().getActivityIcon(cn);
+            android.graphics.Bitmap b = android.graphics.Bitmap.createBitmap(w, h, android.graphics.Bitmap.Config.ARGB_8888);
+            android.graphics.Canvas c = new android.graphics.Canvas(b);
+            android.graphics.Path path = new android.graphics.Path();
+            android.graphics.RectF box = new android.graphics.RectF(0, 0, w, h);
+            if ("Circle".equals(shape)) path.addOval(box, android.graphics.Path.Direction.CW);
+            else {
+                float r = "Squircle".equals(shape) ? 0.30f * w : "Rounded".equals(shape) ? radius * 0.5f * w : 0.06f * w;
+                path.addRoundRect(box, r, r, android.graphics.Path.Direction.CW);
+            }
+            c.clipPath(path);
+            if (d instanceof android.graphics.drawable.AdaptiveIconDrawable) {
+                android.graphics.drawable.AdaptiveIconDrawable ad = (android.graphics.drawable.AdaptiveIconDrawable) d;
+                int pad = w / 4;
+                if (ad.getBackground() != null) { ad.getBackground().setBounds(-pad, -pad, w + pad, h + pad); ad.getBackground().draw(c); }
+                if (ad.getForeground() != null) { ad.getForeground().setBounds(-pad, -pad, w + pad, h + pad); ad.getForeground().draw(c); }
+            } else {
+                c.drawColor(0xFFF1F1F1);
+                int inset = w * 14 / 100;
+                d.setBounds(inset, inset, w - inset, h - inset);
+                d.draw(c);
+            }
+            return b;
+        } catch (Throwable t) { return null; }
+    }
+
+    /**
+     * The home gesture (swipe up from an app): the system's recents component sends us the closing app and a reply
+     * channel and shrinks the app toward whatever rectangle we answer with. We tell it where the app's icon sits on our
+     * home screen and hand over a small surface with that icon, which it cross-fades in: the app flies into its icon
+     * instead of a pill over a bare wallpaper.
+     */
+    @SuppressWarnings("deprecation")
+    private void answerGestureContract(Intent intent) {
+        try {
+            android.os.Bundle c = intent.getBundleExtra("gesture_nav_contract_v1");
+            if (c == null) return;
+            final android.content.ComponentName cn = c.getParcelable(Intent.EXTRA_COMPONENT_NAME);
+            final android.os.Message cb = c.getParcelable("android.intent.extra.REMOTE_CALLBACK");
+            if (cn == null || cb == null || cb.replyTo == null) return;
+            String want = cn.getPackageName();
+            android.graphics.RectF found = null;
+            String shape = "Circle";
+            float radius = 0.3f;
+            java.io.BufferedReader r = new java.io.BufferedReader(new java.io.FileReader(new java.io.File(getFilesDir(), "icon-rects.txt")));
+            for (String line; (line = r.readLine()) != null; ) {
+                String[] p = line.split(" ");
+                if (p.length == 3 && p[0].equals("style")) { shape = p[1]; radius = Float.parseFloat(p[2]); }
+                else if (p.length == 5 && p[0].equals(want) && found == null) {
+                    found = new android.graphics.RectF(Float.parseFloat(p[1]), Float.parseFloat(p[2]), Float.parseFloat(p[3]), Float.parseFloat(p[4]));
+                }
+            }
+            r.close();
+            if (found == null) return;
+            final android.graphics.RectF pos = found;
+            final String fshape = shape;
+            final float frad = radius;
+            dropFloatingIcon();
+            final int w = Math.max(8, Math.round(pos.width())), h = Math.max(8, Math.round(pos.height()));
+            final android.graphics.Bitmap bmp = android.os.Build.VERSION.SDK_INT >= 29 ? iconFor(cn, w, h, fshape, frad) : null;
+            final Runnable reply = new Runnable() {
+                @Override public void run() {
+                    try {
+                        android.os.Bundle res = new android.os.Bundle();
+                        res.putParcelable("gesture_nav_contract_icon_position", pos);
+                        if (floatingIcon != null && android.os.Build.VERSION.SDK_INT >= 29) res.putParcelable("gesture_nav_contract_surface_control", floatingIcon.getSurfaceControl());
+                        android.os.Message m = android.os.Message.obtain();
+                        m.copyFrom(cb);
+                        m.setData(res);
+                        cb.replyTo.send(m);
+                        android.util.Log.i("lumen-life", "answered gesture contract for " + cn.getPackageName() + " " + pos + (floatingIcon != null ? " with icon surface" : ""));
+                    } catch (Throwable t) { android.util.Log.i("lumen-life", "gesture reply failed: " + t); }
+                }
+            };
+            if (bmp == null) { reply.run(); return; }
+            final android.view.SurfaceView sv = new android.view.SurfaceView(this);
+            sv.setZOrderOnTop(true);
+            sv.getHolder().setFormat(android.graphics.PixelFormat.TRANSLUCENT);
+            sv.getHolder().addCallback(new android.view.SurfaceHolder.Callback() {
+                @Override public void surfaceCreated(android.view.SurfaceHolder holder) {
+                    try {
+                        android.graphics.Canvas cv = holder.lockHardwareCanvas();
+                        cv.drawColor(0, android.graphics.PorterDuff.Mode.CLEAR);
+                        cv.drawBitmap(bmp, 0, 0, null);
+                        holder.unlockCanvasAndPost(cv);
+                    } catch (Throwable ignored) {}
+                    reply.run();
+                }
+                @Override public void surfaceChanged(android.view.SurfaceHolder holder, int f, int a, int b) {}
+                @Override public void surfaceDestroyed(android.view.SurfaceHolder holder) {}
+            });
+            floatingIcon = sv;
+            sv.postDelayed(new Runnable() { @Override public void run() { if (floatingIcon == sv) dropFloatingIcon(); } }, 1500);
+            android.widget.FrameLayout.LayoutParams lp = new android.widget.FrameLayout.LayoutParams(w, h);
+            lp.leftMargin = Math.round(pos.left);
+            lp.topMargin = Math.round(pos.top);
+            addContentView(sv, lp);
+            // safety: if the surface never appears, answer without it so the animation is not left waiting
+            sv.postDelayed(new Runnable() { @Override public void run() { if (sv.getHolder().getSurface() == null || !sv.getHolder().getSurface().isValid()) reply.run(); } }, 150);
+        } catch (Throwable t) {
+            android.util.Log.i("lumen-life", "gesture contract failed: " + t);
+        }
+    }
+
     @Override
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
+        answerGestureContract(intent);
         note(intent);
     }
 }

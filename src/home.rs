@@ -188,6 +188,7 @@ impl Lumen {
         if !covered {
             let _s = crate::perf::span(crate::perf::Sec::Paint);
             self.paint_home(ctx, &geo, dt);
+            self.publish_icon_rects(ctx, &geo);
         }
         if self.screen == Screen::Home {
             {
@@ -806,6 +807,42 @@ impl Lumen {
     }
 
     /// The icon (or widget) rectangle of an item that is on the page or in the dock now.
+    /// Writes where every app icon on the visible page and in the dock sits (physical pixels), so the system's
+    /// "swipe up to home" animation can shrink an app into its real icon (see LumenActivity.onNewIntent).
+    fn publish_icon_rects(&mut self, ctx: &Context, geo: &Geo) {
+        if !matches!(self.touch, Touch::Idle | Touch::Spent) || self.edit || self.drawer > 0.01 || self.search_open || self.menu.is_some() || (self.page - self.page.round()).abs() > 0.01 {
+            return;
+        }
+        let k = ctx.pixels_per_point();
+        let pi = (self.page.round() as usize).min(self.cfg.pages.len().saturating_sub(1));
+        let mut keys: Vec<(String, String)> = vec![];
+        let mut add = |it: &Item| {
+            if let Item::App(p) = it {
+                keys.push((p.clone(), it.key()));
+            }
+        };
+        for it in &self.cfg.dock_items {
+            add(it);
+        }
+        if self.page.round() < self.cfg.pages.len() as f32 {
+            if let Some(pg) = self.cfg.pages.get(pi) {
+                for pl in &pg.items {
+                    add(&pl.item);
+                }
+            }
+        }
+        let mut out = format!("style {:?} {:.3}\n", self.cfg.shape, self.cfg.icon_radius);
+        for (pkg, key) in keys {
+            if let Some(r) = self.key_icon_rect(geo, &key) {
+                out.push_str(&format!("{pkg} {:.0} {:.0} {:.0} {:.0}\n", r.left() * k, r.top() * k, r.right() * k, r.bottom() * k));
+            }
+        }
+        if out != self.icon_rects_text {
+            let _ = std::fs::write(std::path::Path::new(&self.dir).join("icon-rects.txt"), out.as_bytes());
+            self.icon_rects_text = out;
+        }
+    }
+
     fn key_icon_rect(&self, geo: &Geo, key: &str) -> Option<Rect> {
         let r = self.rect_of_key(geo, key)?;
         if self.cfg.dock_items.iter().any(|i| i.key() == key) {

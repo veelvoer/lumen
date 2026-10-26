@@ -81,10 +81,14 @@ pub fn shadow(p: &Painter, rect: Rect, radius: f32, strength: u8) {
     p.add(Shadow { offset: [0, 6], blur: 20, spread: 0, color: Color32::from_black_alpha(strength) }.as_shape(rect, cr(radius)));
 }
 
-fn textured(p: &Painter, tex: egui::TextureId, uv: Rect, rect: Rect, tint: Color32, rot: f32) {
+fn textured(p: &Painter, tex: egui::TextureId, uv: Rect, texel: f32, rect: Rect, tint: Color32, rot: f32) {
     if rot == 0.0 {
         p.image(tex, rect, uv, tint);
     } else {
+        // A turning quad has hard, unsmoothed edges that crawl and shimmer. Draw it one texel larger so its edge
+        // falls on the transparent border the atlas keeps around each picture and is blended by the texture filter.
+        let grow = texel / uv.width().max(1e-6) * rect.width();
+        let (rect, uv) = (rect.expand(grow), uv.expand(texel));
         let mut m = Mesh::with_texture(tex);
         m.add_rect_with_uv(rect, uv, tint);
         m.rotate(egui::emath::Rot2::from_angle(rot), rect.center());
@@ -103,9 +107,9 @@ pub fn app_icon(p: &Painter, rect: Rect, app: &App, icons: &mut Icons, cfg: &Con
             match icons.plates() {
                 Some((plate, ring)) => {
                     // textured, so plates and glyphs are drawn in one go
-                    textured(p, plate.tex, plate.uv, rect, fade(pal.plate), rot);
+                    textured(p, plate.tex, plate.uv, plate.texel, rect, fade(pal.plate), rot);
                     if cfg.preset == Preset::Nothing {
-                        textured(p, ring.tex, ring.uv, rect, fade(pal.glass_line), rot);
+                        textured(p, ring.tex, ring.uv, ring.texel, rect, fade(pal.glass_line), rot);
                     }
                 }
                 None => {
@@ -115,9 +119,9 @@ pub fn app_icon(p: &Painter, rect: Rect, app: &App, icons: &mut Icons, cfg: &Con
                     }
                 }
             }
-            textured(p, ic.tex, ic.uv, rect.shrink(rect.width() * 0.13), fade(pal.glyph), rot);
+            textured(p, ic.tex, ic.uv, ic.texel, rect.shrink(rect.width() * 0.13), fade(pal.glyph), rot);
         }
-        Some(ic) => textured(p, ic.tex, ic.uv, rect, Color32::WHITE.gamma_multiply(alpha), rot),
+        Some(ic) => textured(p, ic.tex, ic.uv, ic.texel, rect, Color32::WHITE.gamma_multiply(alpha), rot),
         None => {
             p.rect_filled(rect, cr(radius), fade(pal.card));
             if icons.failed(&app.pkg) {
@@ -287,6 +291,11 @@ pub fn liquid_glass(p: &Painter, rect: Rect, radius: f32, pal: &Palette, name: &
 /// Frosted glass without reading the wallpaper: a soft shadow, a veil in the wallpaper's own hue that is lighter at the
 /// top, and a fine light rim. No lines, no hard edges.
 pub fn frost(p: &Painter, rect: Rect, r: f32, pal: &Palette) {
+    frost_with(p, rect, r, pal, 0.0)
+}
+
+/// `solid` 0..1 pulls the veil toward opaque, for panels that must hide what is behind them (an open folder).
+pub fn frost_with(p: &Painter, rect: Rect, r: f32, pal: &Palette, solid: f32) {
     let r = r.min(rect.height() / 2.0).min(rect.width() / 2.0);
     let light = crate::perf::light();
     if !light {
@@ -302,7 +311,7 @@ pub fn frost(p: &Painter, rect: Rect, r: f32, pal: &Palette) {
         if d >= r { 0.0 } else { r - (r * r - (r - d) * (r - d)).max(0.0).sqrt() }
     };
     let mut mesh = Mesh::default();
-    let color = |t: f32| Color32::from_rgba_unmultiplied(v[0] as u8, v[1] as u8, v[2] as u8, (base + top * (1.0 - t).powf(1.6)) as u8);
+    let color = |t: f32| { let a = base + top * (1.0 - t).powf(1.6); Color32::from_rgba_unmultiplied(v[0] as u8, v[1] as u8, v[2] as u8, (a + (238.0 - a) * solid) as u8) };
     for i in 0..=n {
         let t = i as f32 / n as f32;
         let y = rect.top() + t * rect.height();

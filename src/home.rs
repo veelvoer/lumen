@@ -444,7 +444,7 @@ impl Lumen {
                     moving |= sp.step_to(target.min, dt, feel.item);
                     let cell = Rect::from_min_size(sp.pos(), target.size());
                     let sc = scale_sp.get(&key).map(|s| s.x).unwrap_or(1.0);
-                    let jig = jiggle(t_now, &key) * edit_amp;
+                    let jig = jiggle(t_now, &key, edit_amp);
                     paint_item(p, &pl.item, cell, &icon_rect, &cfg, &pal, &mut icons, &find, &badges, &live, sc, jig, 1.0, true, sc > 1.05, &mut labels);
                     if edit_amp > 0.01 && dragging_key.as_deref() != Some(key.as_str()) {
                         paint_remove_badge(p, &pl.item, cell, &icon_rect, &cfg, &pal, edit_amp);
@@ -504,8 +504,11 @@ impl Lumen {
         };
 
         // 3. dock: it slides away on the App Library page, like iOS
-        let dock_vis = if cfg.app_library { 1.0 - (page - (cfg.pages.len() as f32 - 1.0)).clamp(0.0, 1.0) } else { 1.0 };
-        layer(ctx, "dock", 0, screen, tf(0.0, 1.0), dock_vis * base_alpha, |p| {
+        let lib_t = if cfg.app_library { (page - (cfg.pages.len() as f32 - 1.0)).clamp(0.0, 1.0) } else { 0.0 };
+        // gone well before the library cards arrive, sinking as it fades, so the two never overlap
+        let dock_vis = (1.0 - lib_t * 2.2).clamp(0.0, 1.0);
+        let dock_tf = egui::emath::TSTransform::from_translation(vec2(0.0, 70.0 * (1.0 - dock_vis))) * tf(0.0, 1.0);
+        layer(ctx, "dock", 0, screen, dock_tf, dock_vis * base_alpha, |p| {
             if dock_vis < 0.02 {
                 return;
             }
@@ -527,7 +530,7 @@ impl Lumen {
                 moving |= sp.step_to(slot.min, dt, feel.item);
                 let cell = Rect::from_min_size(sp.pos(), slot.size());
                 let sc = scale_sp.get(&key).map(|s| s.x).unwrap_or(1.0);
-                let jig = jiggle(t_now, &key) * edit_amp;
+                let jig = jiggle(t_now, &key, edit_amp);
                 paint_item(p, it, cell, &dock_icon, cfg, pal, &mut icons, &find, &badges, live, sc, jig, 1.0, cfg.dock_labels, sc > 1.05, &mut labels);
                 if edit_amp > 0.01 {
                     paint_remove_badge(p, it, cell, &dock_icon, cfg, pal, edit_amp);
@@ -538,7 +541,7 @@ impl Lumen {
 
         // 4. search pill, page dots, edit chrome
         // the capsule steps aside as the App Library slides in, so it never sits on the cards
-        let to_library = if cfg.app_library { (page - (cfg.pages.len() as f32 - 1.0)).clamp(0.0, 1.0) } else { 0.0 };
+        let to_library = lib_t;
         layer(ctx, "pill", 0, screen, tf(0.0, 1.0), base_alpha * (1.0 - to_library * 1.4).clamp(0.0, 1.0), |p| {
             if let Some(s) = geo.search {
                 if cfg.search != Search::Off {
@@ -723,7 +726,7 @@ impl Lumen {
             let target_r = if ios { 34.0 } else { 36.0 };
             let r_now = (icon_r + (target_r - icon_r) * t.clamp(0.0, 1.0)) / s.max(0.05);
             if ios {
-                widgets::frost(p, panel, r_now, &pal);
+                widgets::frost_with(p, panel, r_now, &pal, 0.9);
             } else {
                 p.rect_filled(panel, cr(r_now), panel_fill);
             }
@@ -1833,13 +1836,25 @@ fn page_effect(e: PageEffect, d: f32, w: f32) -> (f32, f32, f32) {
     }
 }
 
-/// Each item sways a little differently, so the edit mode looks alive.
-fn jiggle(t: f32, key: &str) -> f32 {
-    // iOS: about two degrees, four to five swings a second, every icon a little out of step. A pure sine at
-    // this rate is sampled 12+ times a cycle even at 60 fps, so it stays fluid; t is wrapped to keep f32 exact.
-    let phase = key.bytes().fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(b as u32)) as f32 * 0.37;
-    let f = 1.0 + (phase.sin() * 0.06);
-    (t * 31.0 * f + phase).sin() * 0.034
+/// Each icon dances a little differently: a main sway of about two degrees, a faster small one on top, and a slow
+/// drift in how strongly it sways, so no two icons are in step and the motion never looks like a metronome.
+/// `amp` is the edit-mode spring; each icon starts a moment after the one before it (a ripple through the grid).
+fn jiggle(t: f32, key: &str, amp: f32) -> f32 {
+    let h = key.bytes().fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(b as u32));
+    let phase = (h % 6283) as f32 * 0.001;
+    let r = ((h >> 8) % 1000) as f32 / 1000.0;
+    // staggered start: 0 to 0.35 of the spring's travel
+    let delay = r * 0.35;
+    let a = ((amp - delay) / (1.0 - delay)).clamp(0.0, 1.0);
+    if a <= 0.0 {
+        return 0.0;
+    }
+    let a = a * a * (3.0 - 2.0 * a); // ease the entry
+    let f = 1.0 + (r - 0.5) * 0.14; // each icon at its own speed
+    let main = (t * 28.0 * f + phase).sin() * 0.031;
+    let small = (t * 47.0 * f + phase * 2.3).sin() * 0.007;
+    let drift = 0.85 + 0.15 * (t * 1.7 + phase * 3.1).sin();
+    (main + small) * drift * a
 }
 
 /// A transformed, faded painting layer. Layers are areas so their stacking order is stable.

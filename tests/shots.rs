@@ -417,3 +417,92 @@ fn recovers_after_a_frame_panic() {
     assert!(l.icons.is_some(), "the icon atlas must be rebuilt");
     shot(&mut h, "after-recover");
 }
+
+#[test]
+fn wiggle_actually_moves() {
+    let mut h = make(Preset::Ios, |_| {});
+    lumen(&mut h).edit = true;
+    for _ in 0..40 {
+        h.step();
+        std::thread::sleep(std::time::Duration::from_millis(16));
+    }
+    let a = h.render().expect("render");
+    let mut moved = 0usize;
+    for _ in 0..6 {
+        for _ in 0..3 {
+            h.step();
+            std::thread::sleep(std::time::Duration::from_millis(16));
+        }
+        let b = h.render().expect("render");
+        let diff: u64 = a.pixels().zip(b.pixels()).map(|(p, q)| (p.0[0] as i32 - q.0[0] as i32).unsigned_abs() as u64).sum();
+        println!("diff vs first frame: {diff}");
+        if diff > 2000 {
+            moved += 1;
+        }
+    }
+    assert!(moved >= 4, "icons do not move in edit mode");
+}
+
+#[test]
+fn filmstrips_rest() {
+    use lumen::Dialog;
+    // folder: a folder with four apps opens out of its icon and folds back into it
+    let mut h = make(Preset::Ios, |_| {});
+    {
+        let l = lumen(&mut h);
+        let pkgs: Vec<String> = l.apps.iter().take(4).map(|a| a.pkg.clone()).collect();
+        let id = l.cfg.new_id();
+        l.cfg.place(0, 0, 5, lumen::Item::Folder { id, name: "Fun".into(), apps: pkgs });
+        l.open_folder = Some(id);
+    }
+    strip(&mut h, "ios-folder-open", 16, 22);
+    lumen(&mut h).open_folder = None;
+    strip(&mut h, "ios-folder-close", 16, 22);
+    // library page and back
+    let mut h = make(Preset::Ios, |_| {});
+    lumen(&mut h).page_target = 1.0;
+    strip(&mut h, "ios-to-library", 16, 22);
+    lumen(&mut h).page_target = 0.0;
+    strip(&mut h, "ios-from-library", 16, 22);
+    // iOS app drawer
+    let mut h = make(Preset::Ios, |_| {});
+    lumen(&mut h).drawer_open = true;
+    strip(&mut h, "ios-drawer-open", 16, 22);
+    lumen(&mut h).drawer_open = false;
+    strip(&mut h, "ios-drawer-close", 16, 22);
+    // what's new sheet
+    let mut h = make(Preset::Ios, |_| {});
+    lumen(&mut h).show_current_notes();
+    strip(&mut h, "ios-notes-open", 16, 22);
+    lumen(&mut h).whats_new = None;
+    strip(&mut h, "ios-notes-close", 16, 22);
+    // dialog + toast
+    let mut h = make(Preset::Ios, |_| {});
+    let ctx = h.ctx.clone();
+    lumen(&mut h).dialog = Some(Dialog::RenameFolder { id: 1, text: "Fun".into() });
+    lumen(&mut h).toast(&ctx, "Widget added");
+    strip(&mut h, "ios-dialog-toast", 16, 30);
+    // the other presets: search and drawer
+    for (p, n) in [(Preset::Nothing, "nothing"), (Preset::Pixel, "pixel")] {
+        let mut h = make(p, |_| {});
+        lumen(&mut h).search_open = true;
+        strip(&mut h, &format!("{n}-search-open"), 16, 22);
+        lumen(&mut h).search_open = false;
+        lumen(&mut h).drawer_open = true;
+        strip(&mut h, &format!("{n}-drawer-open2"), 16, 22);
+    }
+}
+
+#[test]
+fn long_press_on_empty_space_in_ios() {
+    let mut h = make(Preset::Ios, |_| {});
+    let p = Pos2::new(330.0, 700.0);
+    touch_down(&h, p);
+    for _ in 0..14 {
+        h.step();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let l = lumen(&mut h);
+    println!("menu: {:?}, edit: {}, action {:?}", l.menu.as_ref().map(|m| format!("{:?}", m.target)), l.edit, l.cfg.long_press_empty);
+    shot(&mut h, "ios-empty-longpress");
+}

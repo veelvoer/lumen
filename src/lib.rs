@@ -24,7 +24,8 @@ mod update;
 mod widgets;
 
 pub use app::Lumen;
-pub use config::{Config, Mode, Preset};
+pub use app::Dialog;
+pub use config::{Config, Item, Mode, Preset};
 pub use platform::files_dir;
 pub use settings::SettingsPage;
 

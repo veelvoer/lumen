@@ -22,6 +22,8 @@ pub struct Icon {
     pub uv: Rect,
     /// only the glyph, to be tinted and put on a plate
     pub mono: bool,
+    /// one texel in uv units: the atlas keeps a transparent texel around every picture
+    pub texel: f32,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -227,7 +229,7 @@ impl Icons {
         let at = |idx: usize| {
             let (page, local) = (idx / pp, idx % pp);
             let (x, y) = (((local % pr) * c + 1) as f32, ((local / pr) * c + 1) as f32);
-            Icon { tex: self.pages[page].id(), uv: Rect::from_min_max(pos2(x / self.page_px as f32, y / self.page_px as f32), pos2((x + px) / self.page_px as f32, (y + px) / self.page_px as f32)), mono: false }
+            Icon { tex: self.pages[page].id(), uv: Rect::from_min_max(pos2(x / self.page_px as f32, y / self.page_px as f32), pos2((x + px) / self.page_px as f32, (y + px) / self.page_px as f32)), mono: false, texel: 1.0 / self.page_px as f32 }
         };
         Some((at(0), at(1)))
     }
@@ -273,7 +275,7 @@ impl Icons {
         let px = self.style.px as f32;
         let (x, y) = ((s.x + 1) as f32, (s.y + 1) as f32);
         let uv = Rect::from_min_max(pos2(x / self.page_px as f32, y / self.page_px as f32), pos2((x + px) / self.page_px as f32, (y + px) / self.page_px as f32));
-        Some(Icon { tex: self.pages[s.page].id(), uv, mono: s.mono })
+        Some(Icon { tex: self.pages[s.page].id(), uv, mono: s.mono, texel: 1.0 / self.page_px as f32 })
     }
 
     /// Queue every app for loading, a few at a time and only while nothing is moving.

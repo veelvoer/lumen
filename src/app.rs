@@ -238,6 +238,7 @@ pub struct Lumen {
     pub search_t: Spring,
     pub search_from: Option<Rect>,
     pub picker_tab: u8,
+    pub packs: Option<Vec<(String, String)>>,
     pub picker_open: std::collections::HashSet<String>,
     pub search_open: bool,
     pub query: String,
@@ -278,6 +279,7 @@ impl Lumen {
         // what was learned from slow frames last time may have been the system's app animations, not Lumen: start fresh
         cfg.light_learned = false;
         platform::set_refresh_cap(cfg.refresh_cap);
+        platform::set_icon_pack(&cfg.icon_pack);
         let phone_colors = platform::dynamic_colors();
         let system_dark = platform::is_dark();
         let _ = (&cfg.mode, 0);
@@ -312,7 +314,7 @@ impl Lumen {
             last_launch: -10.0,
             system_dark,
             wallpaper_dark_text: false,
-            icons: Some(Icons::new(ctx, icons::Style { shape: cfg.shape, radius: cfg.icon_radius, mono: cfg.themed_icons, px: icons::px_for(cfg.icon_size.max(cfg.dock_icon_size), ctx.pixels_per_point()) }, dir.clone(), !platform::device_info().low_ram)),
+            icons: Some(Icons::new(ctx, icons::Style { shape: cfg.shape, radius: cfg.icon_radius, mono: cfg.themed_icons, px: icons::px_for(cfg.icon_size.max(cfg.dock_icon_size), ctx.pixels_per_point()), pack: icons::pack_id(&cfg.icon_pack) }, dir.clone(), !platform::device_info().low_ram)),
             dir,
             apps: Default::default(),
             by_pkg: HashMap::new(),
@@ -362,6 +364,7 @@ impl Lumen {
             search_t: Spring::at(0.0),
             search_from: None,
             picker_tab: 1,
+            packs: None,
             picker_open: Default::default(),
             search_open: false,
             query: String::new(),
@@ -433,6 +436,7 @@ impl Lumen {
 
     /// Applies colors and icon style after any change in the config.
     pub fn restyle(&mut self, ctx: &Context) {
+        platform::set_icon_pack(&self.cfg.icon_pack);
         self.pal = theme::palette(&self.cfg, self.dark(), self.phone_colors, self.wallpaper_dark_text);
         theme::apply(ctx, &self.cfg, &self.pal);
         let mut st = ctx.global_style().as_ref().clone();
@@ -442,7 +446,7 @@ impl Lumen {
         st.spacing.slider_width = 150.0;
         ctx.set_global_style(st);
         if !ctx.input(|i| i.pointer.any_down()) {
-            let style = icons::Style { shape: self.cfg.shape, radius: self.cfg.icon_radius, mono: self.cfg.themed_icons, px: { let px = icons::px_for(self.cfg.icon_size.max(self.cfg.dock_icon_size), ctx.pixels_per_point()); if self.light { px.min(112) } else { px } } };
+            let style = icons::Style { shape: self.cfg.shape, radius: self.cfg.icon_radius, mono: self.cfg.themed_icons, pack: icons::pack_id(&self.cfg.icon_pack), px: { let px = icons::px_for(self.cfg.icon_size.max(self.cfg.dock_icon_size), ctx.pixels_per_point()); if self.light { px.min(112) } else { px } } };
             if let Some(ic) = self.icons.as_mut() {
                 ic.restyle(style);
             }
@@ -1049,7 +1053,7 @@ impl Lumen {
         // a panic in the middle would leave them empty for good (and every next frame would fail the same way)
         if self.icons.is_none() {
             let px = icons::px_for(self.cfg.icon_size.max(self.cfg.dock_icon_size), ctx.pixels_per_point());
-            let style = icons::Style { shape: self.cfg.shape, radius: self.cfg.icon_radius, mono: self.cfg.themed_icons, px: if self.light { px.min(112) } else { px } };
+            let style = icons::Style { shape: self.cfg.shape, radius: self.cfg.icon_radius, mono: self.cfg.themed_icons, pack: icons::pack_id(&self.cfg.icon_pack), px: if self.light { px.min(112) } else { px } };
             self.icons = Some(Icons::new(ctx, style, self.dir.clone(), !self.device.low_ram));
         }
         if self.apps.is_empty() {

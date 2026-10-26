@@ -407,7 +407,51 @@ fn coverage(rgba: &[u8]) -> f32 {
 /// Loads an app icon as RGBA. `px` is the side of the square bitmap.
 /// With `want_mono` the result is a single-color glyph where possible: the app's own themed layer, else the
 /// silhouette of its foreground (that is what Nothing OS does), else a gray version of the icon.
+static ICON_PACK: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
+/// The icon pack to take pictures from ("" = the apps' own icons).
+pub fn set_icon_pack(p: &str) {
+    if let Ok(mut g) = ICON_PACK.lock() {
+        *g = p.to_string();
+    }
+}
+
+/// Installed icon packs as (package, label).
+pub fn icon_packs() -> Vec<(String, String)> {
+    with(|env, act| {
+        let cls = glue(env, act, "dev.voer.lumen.Glue")?;
+        let s = env.call_static_method(&cls, "iconPacks", "(Landroid/app/Activity;)Ljava/lang/String;", &[JValue::Object(act)])?.l()?;
+        Ok(jstr(env, &s))
+    })
+    .unwrap_or_default()
+    .lines()
+    .filter_map(|l| l.split_once('\t').map(|(a, b)| (a.to_string(), b.to_string())))
+    .collect()
+}
+
 pub fn load_icon(a: &App, px: i32, want_mono: bool) -> Option<RawIcon> {
+    let pack = ICON_PACK.lock().map(|g| g.clone()).unwrap_or_default();
+    if !pack.is_empty() && !want_mono {
+        let from_pack = with(|env, act| {
+            let cls = glue(env, act, "dev.voer.lumen.Glue")?;
+            let (pk, pg, cl) = (env.new_string(&pack)?, env.new_string(&a.pkg)?, env.new_string(&a.cls)?);
+            let dr = env
+                .call_static_method(&cls, "packDrawable", "(Landroid/app/Activity;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Landroid/graphics/drawable/Drawable;", &[JValue::Object(act), JValue::Object(&pk), JValue::Object(&pg), JValue::Object(&cl)])?
+                .l()?;
+            if dr.is_null() {
+                return Ok(None);
+            }
+            let rgba = render_layers(env, px, &[&dr], [0, 0, px, px], None)?;
+            Ok(Some(RawIcon { size: px as usize, rgba, mono: false }))
+        });
+        if let Some(Some(icon)) = from_pack {
+            return Some(icon);
+        }
+    }
+    load_system_icon(a, px, want_mono)
+}
+
+fn load_system_icon(a: &App, px: i32, want_mono: bool) -> Option<RawIcon> {
     with(|env, act| {
         let pm = package_manager(env, act)?;
         let (p, c) = (env.new_string(&a.pkg)?, env.new_string(&a.cls)?);

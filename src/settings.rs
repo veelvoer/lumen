@@ -573,6 +573,25 @@ fn icons_page(ui: &mut Ui, l: &mut Lumen, c: &mut Ctl) {
     section(ui, c, "Size");
     let shown = format!("{} dp", l.cfg.icon_size as i32);
     slider_row(ui, c, "Icon size", &mut l.cfg.icon_size, 36.0..=76.0, shown);
+    section(ui, c, "Icon pack");
+    if l.packs.is_none() {
+        l.packs = Some(platform::icon_packs());
+    }
+    let packs = l.packs.clone().unwrap_or_default();
+    if packs.is_empty() {
+        note(ui, c, "No icon packs installed. Install one from the Play Store (search \"icon pack\") and it shows up here.");
+    } else {
+        let mut names: Vec<&str> = vec!["Apps' own"];
+        names.extend(packs.iter().map(|(_, n)| n.as_str()));
+        let mut idx = packs.iter().position(|(p, _)| *p == l.cfg.icon_pack).map(|i| i + 1).unwrap_or(0);
+        let before = idx;
+        let rows: Vec<(usize, &str)> = names.iter().enumerate().map(|(i, n)| (i, *n)).collect();
+        chips(ui, c, &mut idx, &rows);
+        if idx != before {
+            l.cfg.icon_pack = if idx == 0 { String::new() } else { packs[idx - 1].0.clone() };
+        }
+        note(ui, c, "Apps the pack has no picture for keep their own icon.");
+    }
     section(ui, c, "Style");
     switch_row(ui, c, "Single-color icons", "Uses themed icons where the app has them", &mut l.cfg.themed_icons);
     switch_row(ui, c, "Show app names", "", &mut l.cfg.labels);

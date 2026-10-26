@@ -195,6 +195,74 @@ public final class Glue {
 
     public static String wallpaperError() { return wallpaperError; }
 
+    // ───────────── icon packs (ADW / Nova / Apex style: appfilter.xml maps components to drawables) ─────────────
+
+    /** Installed icon packs, one per line: package, tab, label. */
+    public static String iconPacks(Activity a) {
+        StringBuilder sb = new StringBuilder();
+        try {
+            android.content.pm.PackageManager pm = a.getPackageManager();
+            java.util.HashSet<String> seen = new java.util.HashSet<String>();
+            for (String action : new String[]{"org.adw.launcher.THEMES", "com.novalauncher.THEME", "com.gau.go.launcherex.theme", "app.lawnchair.icons.THEMED_ICON"}) {
+                for (android.content.pm.ResolveInfo ri : pm.queryIntentActivities(new android.content.Intent(action), 0)) {
+                    String pkg = ri.activityInfo.packageName;
+                    if (!seen.add(pkg)) continue;
+                    sb.append(pkg).append('\t').append(ri.loadLabel(pm)).append('\n');
+                }
+            }
+        } catch (Throwable ignored) {}
+        return sb.toString();
+    }
+
+    private static final java.util.HashMap<String, java.util.HashMap<String, String>> packMaps = new java.util.HashMap<String, java.util.HashMap<String, String>>();
+
+    private static java.util.HashMap<String, String> packMap(Activity a, String pack) {
+        synchronized (packMaps) {
+            java.util.HashMap<String, String> m = packMaps.get(pack);
+            if (m != null) return m;
+            m = new java.util.HashMap<String, String>();
+            try {
+                android.content.res.Resources res = a.getPackageManager().getResourcesForApplication(pack);
+                org.xmlpull.v1.XmlPullParser xp = null;
+                int id = res.getIdentifier("appfilter", "xml", pack);
+                if (id != 0) {
+                    xp = res.getXml(id);
+                } else {
+                    java.io.InputStream in = res.getAssets().open("appfilter.xml");
+                    xp = android.util.Xml.newPullParser();
+                    xp.setInput(in, "utf-8");
+                }
+                int ev = xp.getEventType();
+                while (ev != org.xmlpull.v1.XmlPullParser.END_DOCUMENT) {
+                    if (ev == org.xmlpull.v1.XmlPullParser.START_TAG && "item".equals(xp.getName())) {
+                        String comp = xp.getAttributeValue(null, "component");
+                        String dr = xp.getAttributeValue(null, "drawable");
+                        if (comp != null && dr != null && comp.startsWith("ComponentInfo{") && comp.endsWith("}")) {
+                            String key = comp.substring(14, comp.length() - 1);
+                            if (!m.containsKey(key)) m.put(key, dr);
+                        }
+                    }
+                    ev = xp.next();
+                }
+            } catch (Throwable ignored) {}
+            packMaps.put(pack, m);
+            return m;
+        }
+    }
+
+    /** The pack's own picture for this app, or null when the pack has none (the system icon is used then). */
+    public static android.graphics.drawable.Drawable packDrawable(Activity a, String pack, String pkg, String cls) {
+        try {
+            String name = packMap(a, pack).get(pkg + "/" + cls);
+            if (name == null) return null;
+            android.content.res.Resources res = a.getPackageManager().getResourcesForApplication(pack);
+            int id = res.getIdentifier(name, "drawable", pack);
+            if (id == 0) id = res.getIdentifier(name, "mipmap", pack);
+            if (id == 0) return null;
+            return res.getDrawable(id, null);
+        } catch (Throwable t) { return null; }
+    }
+
     /** The wallpaper's main colors ("argb,argb,argb"), which Android hands out without any permission. */
     public static String wallpaperColors(Activity a) {
         if (android.os.Build.VERSION.SDK_INT < 27) return "";

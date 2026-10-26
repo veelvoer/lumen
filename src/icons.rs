@@ -33,6 +33,8 @@ pub struct Style {
     pub mono: bool,
     /// side of the icon bitmaps in pixels
     pub px: i32,
+    /// hash of the icon pack name, 0 = none
+    pub pack: u32,
 }
 
 struct Req {
@@ -76,6 +78,14 @@ pub struct Icons {
 }
 
 /// Rounds the icon pixel size to a multiple of 8, no bigger than needed for crisp drawing.
+/// Small stable hash of a pack name for Style (0 = no pack).
+pub fn pack_id(name: &str) -> u32 {
+    if name.is_empty() {
+        return 0;
+    }
+    name.bytes().fold(2166136261u32, |h, b| (h ^ b as u32).wrapping_mul(16777619)) | 1
+}
+
 pub fn px_for(icon_dp: f32, ppp: f32) -> i32 {
     (((icon_dp * ppp * 1.12) / 8.0).ceil() as i32 * 8).clamp(64, 192)
 }
@@ -89,8 +99,8 @@ fn hash(s: &str) -> String {
     format!("{h:016x}")
 }
 
-fn cache_file(dir: &std::path::Path, app: &App, px: i32, mono: bool) -> PathBuf {
-    dir.join(hash(&format!("{}|{}|{}|{}|{}|v3", app.pkg, app.cls, app.stamp, px, mono)))
+fn cache_file(dir: &std::path::Path, app: &App, px: i32, mono: bool, pack: u32) -> PathBuf {
+    dir.join(hash(&format!("{}|{}|{}|{}|{}|{}|v4", app.pkg, app.cls, app.stamp, px, mono, pack)))
 }
 
 fn read_cache(path: &std::path::Path, px: i32) -> Option<platform::RawIcon> {
@@ -131,7 +141,7 @@ impl Icons {
                         Ok(Ok(r)) => r,
                         _ => return,
                     };
-                    let path = cache_file(&dir, &req.app, req.style.px, req.style.mono);
+                    let path = cache_file(&dir, &req.app, req.style.px, req.style.mono, req.style.pack);
                     let raw = std::panic::catch_unwind(|| {
                         read_cache(&path, req.style.px).or_else(|| {
                             let r = platform::load_icon(&req.app, req.style.px, req.style.mono)?;

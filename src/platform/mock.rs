@@ -317,3 +317,8 @@ pub fn exit_info() -> String {
 pub fn wallpaper_colors() -> Vec<[u8; 3]> {
     vec![[150, 60, 150], [250, 140, 60], [40, 20, 70]]
 }
+
+pub fn set_icon_pack(_: &str) {}
+pub fn icon_packs() -> Vec<(String, String)> {
+    vec![("mock.pack".into(), "Mock icons".into())]
+}
